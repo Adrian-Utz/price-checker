@@ -71,7 +71,71 @@
 			<a class="export-button" href="{{ url_for('export_watchlist_csv') }}">Export CSV</a>
 		</div>
 	</section>
-	<section><h2>Your watchlist <span class="muted">({{ products|length }})</span></h2>{% if products %}<table><thead><tr><th>Product</th><th>Retailer</th><th>Price</th><th>Last checked</th><th></th></tr></thead><tbody>{% for product in products %}<tr><td><a class="product-link" href="{{ product.url }}" rel="noreferrer">{{ product.title or 'Product waiting for first check' }}</a><span class="product-url muted">{{ product.url }}</span>{% if product.error %}<div class="error"><strong>Could not get price:</strong> {{ product.error }}</div>{% endif %}</td><td>{{ product.source }}</td><td class="{{ 'price' if product.price is not none else 'muted' }}">{{ ('$%.2f' % product.price) if product.price is not none else 'Waiting for check' }}</td><td class="muted">{{ product.checked_at or 'Not checked yet' }}</td><td><div class="row-actions"><button class="history-button" type="button" {% if not product.chart %}disabled{% else %}onclick="document.getElementById('history-{{ product.id }}').showModal()"{% endif %}>{{ 'View history graph' if product.chart else 'No history yet' }}</button><form method="post" action="{{ url_for('remove_url', product_id=product.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="remove" title="Remove URL">Remove from Search</button></form></div><dialog class="history-modal" id="history-{{ product.id }}"><div class="modal-header"><div><p class="eyebrow">Price history</p><h3>{{ product.title or product.url }}</h3></div><form method="dialog"><button class="modal-close" aria-label="Close price history">Close</button></form></div><div class="modal-content">{{ product.chart|safe if product.chart else '<p class="chart-empty">Price history appears after a successful check.</p>' }}{% if product.history_rows %}<ol class="history-list">{% for item in product.history_rows %}<li>${{ '%.2f'|format(item.price) }} on {{ item.observed_at_utc }}</li>{% endfor %}</ol>{% else %}<p class="history-empty">No past prices yet.</p>{% endif %}</div></dialog></td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">Your watchlist is empty. Paste a product URL above to get started.</p>{% endif %}</section>
+	<section>
+		<h2>Your watchlist <span class="muted">({{ products|length }})</span></h2>
+		{% if products %}
+		<table>
+			<thead>
+				<tr>
+					<th>Product</th>
+					<th>Retailer</th>
+					<th>Price</th>
+					<th>Last checked</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for product in products %}
+				<tr>
+					<td>
+						<a class="product-link" href="{{ product.url }}" rel="noreferrer">{{ product.title or 'Product waiting for first check' }}</a>
+						<span class="product-url muted">{{ product.url }}</span>
+						{% if product.error %}
+						<div class="error">
+							<strong>Could not get price:</strong> 
+							{{ product.error }}
+						</div>{% endif %}
+					</td>
+					<td>{{ product.source }}</td>
+					<td class="{{ 'price' if product.price is not none else 'muted' }}">{{ ('$%.2f' % product.price) if product.price is not none else 'Waiting for check' }}</td>
+					<td class="muted">{{ product.checked_at or 'Not checked yet' }}</td>
+					<td>
+						<div class="row-actions">
+							<button class="history-button" type="button" {% if not product.chart %}disabled{% else %}onclick="document.getElementById('history-{{ product.id }}').showModal()"{% endif %}>{{ 'View history graph' if product.chart else 'No history yet' }}</button>
+							<form method="post" action="{{ url_for('remove_url', product_id=product.id) }}">
+								<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+								<button class="remove" title="Remove URL">Remove from Search</button>
+							</form>
+						</div>
+						<dialog class="history-modal" id="history-{{ product.id }}">
+							<div class="modal-header">
+								<div>
+									<p class="eyebrow">Price history</p>
+									<h3>{{ product.title or product.url }}</h3>
+								</div>
+								<form method="dialog">
+									<button class="modal-close" aria-label="Close price history">Close</button>
+								</form>
+							</div>
+							<div class="modal-content">{{ product.chart|safe if product.chart else '<p class="chart-empty">Price history appears after a successful check.</p>' }}{% if product.history_rows %}
+								<ol class="history-list">{% for item in product.history_rows %}
+									<li>${{ '%.2f'|format(item.price) }} on {{ item.observed_at_utc }}</li>
+									{% endfor %}
+								</ol>
+								{% else %}
+								<p class="history-empty">No past prices yet.</p>
+								{% endif %}
+							</div>
+						</dialog>
+					</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+		{% else %}
+		<p class="muted">Your watchlist is empty. Paste a product URL above to get started.</p>
+		{% endif %}
+	</section>
 </body></html>
 <script>
     window.addEventListener("pagehide", function (event) {
