@@ -40,7 +40,7 @@ DATABASE_PATH = Path(os.environ.get("PRICE_CHECKER_DB", ROOT / "price_checker.sq
 MAX_URLS = max(20, min(int(os.environ.get("PRICE_CHECKER_MAX_URLS", "100")), 100))
 CACHE_HOURS = max(1, int(os.environ.get("PRICE_CHECKER_CACHE_HOURS", "24")))
 MIN_DELAY_SECONDS = max(1.0, float(os.environ.get("PRICE_CHECKER_MIN_DELAY", "4")))
-app = Flask(__name__, template_folder=".")
+app = Flask(__name__)
 app.secret_key = os.environ.get("PRICE_CHECKER_SECRET", secrets.token_hex(32))
 server = None
 shutdown_lock = threading.Lock()

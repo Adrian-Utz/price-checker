@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Price Checker</title>
+	<link rel="stylesheet" href="{{ url_for('static', filename='stylesheet.css') }}">
+</head>
+<body>
+		<header>
+		<div>
+			<p class="eyebrow">Personal price watchlist</p>
+			<div class="title-line">
+				<h1>Price Checker</h1>
+				<span class="version">v{{ version_number }}</span>
+			</div>
+			<p class="lede">A quiet, once-a-day watchlist for prices that matter.</p>
+		</div>
+			<div class="header-actions">
+				<button class="env-button" type="button" onclick="document.getElementById('env-editor').showModal()">Edit .env</button>
+				<span class="status {{ '' if serpapi_ready else 'warning' }}">
+					{{ 'API ready' if serpapi_ready else 'API key needed' }}
+				</span>
+			</div>
+	</header>
+		<dialog class="history-modal" id="env-editor">
+			<div class="modal-header">
+				<div>
+					<p class="eyebrow">Settings</p>
+					<h3>Edit .env</h3>
+				</div>
+				<form method="dialog">
+					<button class="modal-close" aria-label="Close env editor">Close</button>
+				</form>
+			</div>
+			<div class="modal-content">
+				<form method="post" action="{{ url_for('save_env_file') }}">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					<textarea class="env-textarea" name="env_content" spellcheck="false">{{ env_file_text }}</textarea>
+					<div class="modal-actions">
+						<button type="submit">Save .env</button>
+					</div>
+				</form>
+			</div>
+		</dialog>
+  <div class="notice">Use responsibly. Retailer pages can change, impose rate limits, or prohibit automated access. This tool spaces requests, uses a daily scan limit, and never bypasses CAPTCHAs or access controls. Unless you are specifically using SerpApi, then check your current plan.</div>
+  {% if message %}<p class="notice">{{ message }}</p>{% endif %}
+	{% if not serpapi_ready %}<p class="notice"><strong>One setup step:</strong> set <code>SERPAPI_API_KEY</code> in the same terminal used to start this app, then restart it.</p>{% endif %}
+	<section>
+		<h2>Track a product</h2>
+		<form method="post" action="{{ url_for('add_url') }}">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			<input name="url" type="url" placeholder="Paste a Walmart or Home Depot product URL" aria-label="Product URL" required>
+			<button>Add URL</button>
+		</form>
+		<p class="help">Supported now: Walmart and Home Depot product pages. You can track up to {{ max_urls }} URLs.</p>
+	</section>
+	<section>
+		<h2>Daily check</h2>
+		<form method="post" action="{{ url_for('scan') }}">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			<button {% if not can_scan or not products or not serpapi_ready %}disabled{% endif %}>
+				{{ 'Check prices' if can_scan else 'Checked for today' }}
+			</button>
+			<span class="muted">
+				{% if last_scan %}Last check: {{ last_scan }}{% else %}No check yet. Add a URL, then check prices.{% endif %}
+			</span>
+		</form>
+		<p class="help">Each URL is checked through SerpApi, then saved locally so you can review the result later.</p>
+		<div class="export-actions">
+			<a class="export-button" href="{{ url_for('export_watchlist_json') }}">Export JSON</a>
+			<a class="export-button" href="{{ url_for('export_watchlist_csv') }}">Export CSV</a>
+		</div>
+	</section>
+	<section><h2>Your watchlist <span class="muted">({{ products|length }})</span></h2>{% if products %}<table><thead><tr><th>Product</th><th>Retailer</th><th>Price</th><th>Last checked</th><th></th></tr></thead><tbody>{% for product in products %}<tr><td><a class="product-link" href="{{ product.url }}" rel="noreferrer">{{ product.title or 'Product waiting for first check' }}</a><span class="product-url muted">{{ product.url }}</span>{% if product.error %}<div class="error"><strong>Could not get price:</strong> {{ product.error }}</div>{% endif %}</td><td>{{ product.source }}</td><td class="{{ 'price' if product.price is not none else 'muted' }}">{{ ('$%.2f' % product.price) if product.price is not none else 'Waiting for check' }}</td><td class="muted">{{ product.checked_at or 'Not checked yet' }}</td><td><div class="row-actions"><button class="history-button" type="button" {% if not product.chart %}disabled{% else %}onclick="document.getElementById('history-{{ product.id }}').showModal()"{% endif %}>{{ 'View history graph' if product.chart else 'No history yet' }}</button><form method="post" action="{{ url_for('remove_url', product_id=product.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="remove" title="Remove URL">Remove from Search</button></form></div><dialog class="history-modal" id="history-{{ product.id }}"><div class="modal-header"><div><p class="eyebrow">Price history</p><h3>{{ product.title or product.url }}</h3></div><form method="dialog"><button class="modal-close" aria-label="Close price history">Close</button></form></div><div class="modal-content">{{ product.chart|safe if product.chart else '<p class="chart-empty">Price history appears after a successful check.</p>' }}{% if product.history_rows %}<ol class="history-list">{% for item in product.history_rows %}<li>${{ '%.2f'|format(item.price) }} on {{ item.observed_at_utc }}</li>{% endfor %}</ol>{% else %}<p class="history-empty">No past prices yet.</p>{% endif %}</div></dialog></td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">Your watchlist is empty. Paste a product URL above to get started.</p>{% endif %}</section>
+</body></html>
+<script>
+    window.addEventListener("pagehide", function (event) {
+        if (!event.persisted) {
+            navigator.sendBeacon("{{ url_for('shutdown') }}");
+        }
+    });
+</script>
