@@ -19,7 +19,7 @@ A local web app for maintaining a product watchlist and checking prices once per
 
 ## Run locally
 
-1. Create and activate a virtual environment.
+1. Create and activate a virtual environment.(Not required but recommended.)
 2. Install dependencies: `pip install -r requirements.txt`
 3. Start the app: `python main.py`
 4. The app automatically opens `http://127.0.0.1:5000` in your default browser.

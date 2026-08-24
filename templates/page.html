@@ -16,6 +16,12 @@
 			<p class="lede">A quiet, once-a-day watchlist for prices that matter.</p>
 		</div>
 			<div class="header-actions">
+				<label for="theme-select">Theme</label>
+					<select id="theme-select">
+						<option value="default">Warm</option>
+						<option value="ocean">Ocean</option>
+						<option value="midnight">Midnight</option>
+					</select>
 				<button class="env-button" type="button" onclick="document.getElementById('env-editor').showModal()">Edit .env</button>
 				<span class="status {{ '' if serpapi_ready else 'warning' }}">
 					{{ 'API ready' if serpapi_ready else 'API key needed' }}
@@ -143,4 +149,16 @@
             navigator.sendBeacon("{{ url_for('shutdown') }}");
         }
     });
+</script>
+<script>
+	const themeSelect = document.getElementById("theme-select");
+	const savedTheme = localStorage.getItem("price-checker-theme") || "default";
+
+	document.documentElement.dataset.theme = savedTheme;
+	themeSelect.value = savedTheme;
+
+	themeSelect.addEventListener("change", function () {
+		document.documentElement.dataset.theme = this.value;
+		localStorage.setItem("price-checker-theme", this.value);
+	});
 </script>
