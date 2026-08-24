@@ -27,7 +27,7 @@ from version import VERSION_NUMBER
 Main entry point into the program. This is a web application with a python backend. Used to keep track of certian items that the user selects.
 
 
-Last Update: 8/21/2026
+Last Update: 8/24/2026
 Written on: 7/27/2026
 Written by: AJ Utz
 """

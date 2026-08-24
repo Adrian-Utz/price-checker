@@ -17,11 +17,19 @@ A local web app for maintaining a product watchlist and checking prices once per
 7. Export the watchlist and its saved price history as JSON or CSV.
 8. Shut down the local server after the app tab is closed.
 
+## Setting up a Virtual Environment
+
+Setting up a virtual environment using Windows Powershell(Not required but recommended)
+1. ```python -m venv .venv```
+2. ```.venv\Scripts\Activate.ps1```
+3. Install dependancies: ```python -m pip install -r requiements.txt```
+4. Run the file: ```python main.py```
+
 ## Run locally
 
 1. Create and activate a virtual environment.(Not required but recommended.)
-2. Install dependencies: `pip install -r requirements.txt`
-3. Start the app: `python main.py`
+2. Install dependencies: ```python -m pip install -r requirements.txt```
+3. Start the app: ```python main.py```
 4. The app automatically opens `http://127.0.0.1:5000` in your default browser.
 
 The database is created as `price_checker.sqlite3` beside `main.py`. Set `PRICE_CHECKER_DB` to choose another location. Optional settings are `PRICE_CHECKER_MAX_URLS` (20-100), `PRICE_CHECKER_CACHE_HOURS`, `PRICE_CHECKER_MIN_DELAY`, and `PORT`. The daily scan limit resets at midnight according to the computer's local timezone; observation timestamps remain stored in UTC.
