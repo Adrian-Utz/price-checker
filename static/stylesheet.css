@@ -256,7 +256,7 @@ th {
 .modal-header h3 { margin: 0; }
 
 .modal-close { 
-    background: transparent; 
+    background: var(--page-background); 
     border: 1px solid #9ca597; 
     color: var(--text); 
     padding: 6px 10px; 
