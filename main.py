@@ -55,6 +55,13 @@ def connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+	"""
+	Initialize the database by creating necessary tables if they do not exist.
+	This function establishes a connection to the database using the connect() function.
+	It then executes SQL statements to create two tables:'products' and 'observations'.
+	'products' contain info such as: ID, URL, title, source, price, currency, check date, and error status.
+	'observations' records the observations of prices, curencies, titles, statuses, errors, observed dates, and references to products.
+	"""
 	with connect() as connection:
 		connection.executescript("""
 			CREATE TABLE IF NOT EXISTS products (
@@ -193,25 +200,48 @@ def watchlist_export_rows() -> list[dict[str, object]]:
 
 
 def price_chart(observations: list[sqlite3.Row]) -> Markup | None:
+	"""
+	Generates a SVG line chart represienting the historical prices of products.
+	This function takes a list of SQLite Row objects containing observation data.
+	Filters out the rows where the price is 'None' and creates a list of points with their observed_at timestamp and corresponding price.
+	If there is no valid points, it returns None.
+	"""
+	#extract observed_at timestamps and prices from the list
 	points = [(row["observed_at"], float(row["price"])) for row in observations if row["price"] is not None]
 	if not points:
 		return None
+	
+	#define dimension of the chart
 	width, height = 300, 100
 	left, right, top, bottom = 8, 8, 10, 18
+
+	#calculate the plot area within the chart dimensions
 	plot_width, plot_height = width - left - right, height - top - bottom
+
+	#Scaling
 	prices = [price for _, price in points]
+
+	#Determine the min and max prices to scale the y-axis
 	minimum, maximum = min(prices), max(prices)
 	spread = maximum - minimum or max(minimum * 0.1, 1)
+
+	#Calculate the coords for each pint on the chart
 	coordinates = []
 	for index, (observed_at, price) in enumerate(points):
 		x = left + (plot_width * index / max(len(points) - 1, 1))
 		y = top + plot_height - ((price - minimum) / spread * plot_height)
 		coordinates.append((x, y, observed_at, price))
+
+	#Generate the SVG polyline for the chart line
 	line = " ".join(f"{x:.1f},{y:.1f}" for x, y, _, _ in coordinates)
+
+	# Generate the SVG marks for each point
 	marks = []
 	for x, y, observed_at, price in coordinates:
 		date = format_observed_at_utc(observed_at)
 		marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" tabindex="0"><title>${price:,.2f} on {date}</title></circle>')
+
+	# Return the SVG markup for the price chart
 	return Markup(
 		f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="Price history with {len(points)} observations">'
 		f'<polyline points="{line}" fill="none" stroke="#d06b35" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'
@@ -222,11 +252,24 @@ def price_chart(observations: list[sqlite3.Row]) -> Markup | None:
 
 @app.before_request
 def protect_post_forms() -> None:
+	"""
+	Protects POST requests by checking for valid CSRF tokens
+	This function runs before each request and ensures that the form token is valid
+	It cancels any pending shutdown, checks if a CSRF token exists in the session, and aborts with a 400 error 
+	if the token is invalid or missing when processing POST requests to endpoints other than 'shutdown'.
+	"""
 	cancel_pending_shutdown()
+
+	#If the CSRF token is not in the session, generate a new one.
 	if "csrf_token" not in session:
 		session["csrf_token"] = secrets.token_urlsafe(32)
+
+	#Check if the request method is POST and the endpoint is not 'shutdown'
 	if request.method == "POST" and request.endpoint != "shutdown" and not app.testing:
+		#Retrieve the submitten CSRF token from the form
 		submitted = request.form.get("csrf_token", "")
+
+		#Compare the submitted token with the session token using a secure comparison function
 		if not secrets.compare_digest(submitted, session["csrf_token"]):
 			abort(400, description="Invalid form token.")
 
@@ -254,73 +297,107 @@ def schedule_shutdown() -> None:
 
 
 def run_scan() -> None:
+	"""
+	Runs a full scan of all products in the database.
+	This function initiates a scan, updates product details based on their latest observations,
+	and records observations for each product. It handles retries and ensures that only one URL is fetched
+	per second to avoid overwhelming the server.
+	"""
+	#Record the start time of the scan
 	started = utc_now().isoformat()
+
+	#insert a new row into the scans table with the start time and status
 	with connect() as connection:
 		scan_id = connection.execute("INSERT INTO scans (started_at, status) VALUES (?, ?)", (started, "running")).lastrowid
-		products = connection.execute("SELECT * FROM products ORDER BY id").fetchall()
-	previous_fetch = 0.0
+		products = connection.execute("SELECT * FROM products ORDER BY id").fetchall() #Retrieve all products from the database
+	previous_fetch = 0.0 #initialize a variable to track the time between fetches
+
+	#Iterate over each product in the list
 	for product in products:
-		if product["price"] is not None and cache_is_fresh(product["checked_at"]):
+		if product["price"] is not None and cache_is_fresh(product["checked_at"]): #Skip if product is not availiable or the cache is fresh
 			continue
+		#Wait to ensure a minimum delay between fetches to avoid overwhelming the server
 		time.sleep(max(0, MIN_DELAY_SECONDS + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
 		previous_fetch = time.monotonic()
-		observed_at = utc_now().isoformat()
+		observed_at = utc_now().isoformat() #get the observed at timestamp for the current products
+
+		#Try to fetch the product details from the URl
 		try:
 			result = fetch_product(product["url"])
 			status, error = "success", None
 		except Exception as fetch_error:  # A single URL must not cancel the scan.
 			result, status, error = {}, "error", str(fetch_error)
+
+		#Update the product details in the database with the new data and record the observation
 		with connect() as connection:
 			connection.execute("UPDATE products SET title = COALESCE(?, title), price = ?, currency = ?, checked_at = ?, error = ? WHERE id = ?", (result.get("title"), result.get("price"), result.get("currency"), observed_at, error, product["id"]))
 			connection.execute("INSERT INTO observations (product_id, price, currency, title, status, error, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (product["id"], result.get("price"), result.get("currency"), result.get("title"), status, error, observed_at))
+	#Mark the scan as complete in the database
 	with connect() as connection:
 		connection.execute("UPDATE scans SET completed_at = ?, status = ? WHERE id = ?", (utc_now().isoformat(), "completed", scan_id))
 
 
 def scan_allowed() -> bool:
+	#Connect to the database using the connect function
 	with connect() as connection:
+		#Execute a SQL query to select the latest completed data
+		# The quety orders the scans by their ID in descending order and limits the results to 1
 		scan = connection.execute("SELECT completed_at FROM scans WHERE status = 'completed' ORDER BY id DESC LIMIT 1").fetchone()
+	#Check if there is no scan or if the scan's completed date is not today
 	return not scan or local_calendar_date(scan["completed_at"]) != datetime.now().astimezone().date()
 
 
 @app.route("/", methods=["GET"])
 def index():
+	#Connect to the database using the connect function
 	with connect() as connection:
+		#Execute a SQL query to retrieve all products and order them by their ID
 		product_rows = connection.execute("SELECT * FROM products ORDER BY id").fetchall()
-		products = []
+		products = [] #Empty list to store product views
 		for product in product_rows:
+			#Execute a SQL query to retrieve the history of observations for the current product
 			history = connection.execute(
 				"SELECT price, observed_at FROM observations WHERE product_id = ? AND status = 'success' AND price IS NOT NULL ORDER BY observed_at",
 				(product["id"],),
 			).fetchall()
-			product_view = dict(product)
-			product_view["chart"] = price_chart(history)
+			product_view = dict(product)#create a dictionary for the product view and populate it with porduct details
+			product_view["chart"] = price_chart(history)#Generate a price chart for the product using the price_chart function
+
+			# Create a list of history rows with formatted observed_at UTC
 			product_view["history_rows"] = [
 				{"price": float(row["price"]), "observed_at_utc": format_observed_at_utc(row["observed_at"])}
 				for row in reversed(history)
 			]
-			products.append(product_view)
+			products.append(product_view)#Append the product view to the porduct list
+		#Retrieve the latest completed scan
 		scan = connection.execute("SELECT completed_at FROM scans WHERE status = 'completed' ORDER BY id DESC LIMIT 1").fetchone()
+	#extract the last scan's completed date and format it to "YYYY-MM-DD HH:MM"
 	last_scan = scan["completed_at"].replace("T", " ")[:16] if scan else None
+	#Render the page.html template with the products, maximum URLs, scan allowed status, last scan, message, CSRF token, SERP API readiness, version number, and environment file text
 	return render_template("page.html", products=products, max_urls=MAX_URLS, can_scan=scan_allowed(), last_scan=last_scan, message=request.args.get("message"), csrf_token=session["csrf_token"], serpapi_ready=serpapi_ready(), version_number=VERSION_NUMBER, env_file_text=read_env_file_text())
 
 
 @app.post("/add")
 def add_url():
 	try:
-		normalized = normalize_url(request.form.get("url", ""))
-		with connect() as connection:
+		normalized = normalize_url(request.form.get("url", ""))#Normilize the URl
+		with connect() as connection: #Connect to the database
+			#Check if the number of products in the database exceeds the max limit
 			if connection.execute("SELECT COUNT(*) FROM products").fetchone()[0] >= MAX_URLS:
 				raise ValueError(f"The watchlist limit is {MAX_URLS} URLs.")
+			# Insert the normalized URL into the porduct table if it doesn't exist
 			connection.execute("INSERT OR IGNORE INTO products (url, source) VALUES (?, ?)", (normalized, source_for(normalized)))
+		#Set message based on the number of changes in the database
 		message = "URL added." if connection.total_changes else "That URL is already tracked."
 	except ValueError as error:
 		message = str(error)
+	#Redirect to the index page with the message
 	return redirect(url_for("index", message=message))
 
 
 @app.post("/remove/<int:product_id>")
 def remove_url(product_id: int):
+	"""Endpoint to remove a product from the database based on product ID"""
 	with connect() as connection:
 		connection.execute("DELETE FROM products WHERE id = ?", (product_id,))
 	return redirect(url_for("index", message="URL removed."))
@@ -328,6 +405,7 @@ def remove_url(product_id: int):
 
 @app.post("/scan")
 def scan():
+	"""Check if a scan is allowed for the user"""
 	if not scan_allowed():
 		return redirect(url_for("index", message="Only one completed scan is allowed per day."))
 	run_scan()
@@ -336,6 +414,7 @@ def scan():
 
 @app.get("/export/json")
 def export_watchlist_json():
+	"""Export SQL database as a json file"""
 	content = json.dumps({"products": watchlist_export_rows()}, indent=2)
 	return Response(
 		content,
@@ -346,6 +425,7 @@ def export_watchlist_json():
 
 @app.get("/export/csv")
 def export_watchlist_csv():
+	"""Export SQL database as a csv file"""
 	output = io.StringIO(newline="")
 	fieldnames = ["id", "url", "title", "source", "price", "currency", "checked_at", "error", "history"]
 	writer = csv.DictWriter(output, fieldnames=fieldnames)
@@ -363,6 +443,7 @@ def export_watchlist_csv():
 
 @app.post("/shutdown")
 def shutdown():
+	"""Detect when the user closed the tab and shutdown the rest of the program"""
 	if request.remote_addr not in {"127.0.0.1", "::1", "localhost", None}:
 		abort(403)
 	schedule_shutdown()
@@ -371,6 +452,7 @@ def shutdown():
 
 @app.post("/settings/env")
 def save_env_file():
+	"""Update the user's .env"""
 	try:
 		save_env_file_text(request.form.get("env_content", ""))
 		message = ".env updated successfully."
@@ -380,6 +462,7 @@ def save_env_file():
 
 
 def open_app_browser(host: str, port: int) -> None:
+	"""Open a web browser for a specified host and port"""
 	if os.environ.get("PRICE_CHECKER_OPEN_BROWSER", "1").lower() in {"0", "false", "no"}:
 		return
 	url = app_url(host, port)
