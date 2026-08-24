@@ -2,6 +2,11 @@
 
 A local web app for maintaining a product watchlist and checking prices once per day. It uses SerpApi Walmart and Home Depot product lookups, SQLite history, conservative request pacing, and cached results.
 
+**Written by:** AJ Utz  
+**Written on:** 7/27/2026  
+**Last Update on:** 8/24/2026  
+**Latest Version:** 0.0.2beta  
+
 ## Main Capabilities
 1. Allow the user to input up to 20-100 URLs.
 2. Look up Walmart and Home Depot products through their SerpApi engines.

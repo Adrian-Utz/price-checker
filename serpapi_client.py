@@ -8,6 +8,14 @@ from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from urllib.request import urlopen
 
+"""
+Use SerpApi to fetch product information, and keep it in lists
+
+Last Update: 8/24/2026
+Written on: 7/27/2026
+Written by: AJ Utz
+"""
+
 
 class SerpApiError(RuntimeError):
     """Raised when SerpApi cannot return a usable product result."""
