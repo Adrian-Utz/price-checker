@@ -12,6 +12,9 @@
 			<div class="title-line">
 				<h1>Price Checker</h1>
 				<span class="version">v{{ version_number }}</span>
+				{% if update_available %}
+				<a class="update-badge" href="{{ releases_url }}" target="_blank" rel="noopener noreferrer">Update available: {{ latest_version }}</a>
+				{% endif %}
 			</div>
 			<p class="lede">A quiet, once-a-day watchlist for prices that matter.</p>
 		</div>

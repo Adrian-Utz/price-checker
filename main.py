@@ -22,6 +22,7 @@ from serpapi_client import SerpApiClient
 from werkzeug.serving import make_server
 
 from version import VERSION_NUMBER
+import check_for_update
 
 """
 Main entry point into the program. This is a web application with a python backend. Used to keep track of certian items that the user selects.
@@ -45,6 +46,19 @@ app.secret_key = os.environ.get("PRICE_CHECKER_SECRET", secrets.token_hex(32))
 server = None
 shutdown_lock = threading.Lock()
 shutdown_timer = None
+update_info = {"available": False, "latest_version": None}
+update_info_lock = threading.Lock()
+
+
+def check_for_update_background() -> None:
+	"""Query GitHub for a newer release in a background thread and cache the result for the UI."""
+	try:
+		available, _local, latest = check_for_update.is_update_available()
+	except Exception:
+		return
+	with update_info_lock:
+		update_info["available"] = available
+		update_info["latest_version"] = latest
 
 
 def connect() -> sqlite3.Connection:
@@ -373,8 +387,11 @@ def index():
 		scan = connection.execute("SELECT completed_at FROM scans WHERE status = 'completed' ORDER BY id DESC LIMIT 1").fetchone()
 	#extract the last scan's completed date and format it to "YYYY-MM-DD HH:MM"
 	last_scan = scan["completed_at"].replace("T", " ")[:16] if scan else None
+	with update_info_lock:
+		update_available = update_info["available"]
+		latest_version = update_info["latest_version"]
 	#Render the page.html template with the products, maximum URLs, scan allowed status, last scan, message, CSRF token, SERP API readiness, version number, and environment file text
-	return render_template("page.html", products=products, max_urls=MAX_URLS, can_scan=scan_allowed(), last_scan=last_scan, message=request.args.get("message"), csrf_token=session["csrf_token"], serpapi_ready=serpapi_ready(), version_number=VERSION_NUMBER, env_file_text=read_env_file_text())
+	return render_template("page.html", products=products, max_urls=MAX_URLS, can_scan=scan_allowed(), last_scan=last_scan, message=request.args.get("message"), csrf_token=session["csrf_token"], serpapi_ready=serpapi_ready(), version_number=VERSION_NUMBER, env_file_text=read_env_file_text(), update_available=update_available, latest_version=latest_version, releases_url=check_for_update.get_latest_release_url())
 
 
 @app.post("/add")
@@ -485,6 +502,7 @@ if __name__ == "__main__":
 	host = "127.0.0.1"
 	port = int(os.environ.get("PORT", "5000"))
 	server = make_server(host, port, app)
+	threading.Thread(target=check_for_update_background, daemon=True).start()
 	open_app_browser(host, port)
 	server.serve_forever()
 	server.server_close()

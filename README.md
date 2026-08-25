@@ -13,15 +13,15 @@ A local web app for maintaining a product watchlist and checking prices once per
 3. Keep current results and historical observations in SQLite.
 4. Restrict the user to one completed scan per local calendar day, resetting at local midnight.
 5. Space requests with a minimum delay and randomized jitter.
-6. Cache successful or failed URL checks for 24 hours by default.(Resets at midnight)
+6. Cache successful or failed URL checks for 24 hours by default. (Resets at midnight)
 7. Export the watchlist and its saved price history as JSON or CSV.
 8. Shut down the local server after the app tab is closed.
 
 ## Setting up a Virtual Environment
 
-Setting up a virtual environment using Windows Powershell(Not required but recommended)
-1. ```python -m venv .venv```
-2. ```.venv\Scripts\Activate.ps1```
+Setting up a virtual environment using Windows Powershell. (Not required but recommended)
+1. In the directory you put the program: ```python -m venv .venv```
+2. Then: ```.venv\Scripts\Activate.ps1```
 3. Install dependancies: ```python -m pip install -r requiements.txt```
 4. Run the file: ```python main.py```
 
