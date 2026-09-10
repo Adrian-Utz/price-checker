@@ -18,7 +18,7 @@ Planned:
 Use SerpApi to fetch product information, and keep it in lists.
 The free version of SerpApi allows for 250 searches per month, you can comfortable search 57ish items per week, or 8 items a day.
 
-Last Update: 9/1/2026
+Last Update: 9/10/2026
 Written on: 7/27/2026
 Written by: AJ Utz
 """

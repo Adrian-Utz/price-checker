@@ -5,7 +5,7 @@ A local web app for maintaining a product watchlist and checking prices once per
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
 **Last Update on:** 9/10/2026  
-**Latest Version:** 0.0.2beta  
+**Latest Version:** 0.0.1
 
 ## Main Capabilities
 1. Allow the user to input up to 20-100 URLs. (Customizable)
