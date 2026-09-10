@@ -6,7 +6,7 @@
 	<link rel="stylesheet" href="{{ url_for('static', filename='stylesheet.css') }}">
 </head>
 <body>
-		<header>
+	<header>
 		<div>
 			<p class="eyebrow">Personal price watchlist</p>
 			<div class="title-line">
@@ -16,18 +16,33 @@
 				<a class="update-badge" href="{{ releases_url }}" target="_blank" rel="noopener noreferrer">Update available: {{ latest_version }}</a>
 				{% endif %}
 			</div>
+			{% if developer_mode %}
+			<p class="lede">Developer mode is enabled. Daily checks are unlocked, and raw API responses are being saved to the developer database.</p>
+			{% else %}
 			<p class="lede">A quiet, once-a-day watchlist for prices that matter.</p>
+			{% endif %}
+			<form class="provider-select" method="post" action="{{ url_for('set_api_provider') }}">
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				<span class="provider-label">API provider</span>
+				<button class="provider-button {{ 'active' if api_provider == 'auto' }}" name="provider" value="auto" title="Pick the best provider per retailer">Auto</button>
+				<button class="provider-button {{ 'active' if api_provider == 'serpapi' }}" name="provider" value="serpapi" title="Always use SerpApi">SerpApi</button>
+				<button class="provider-button {{ 'active' if api_provider == 'unwrangle' }}" name="provider" value="unwrangle" title="Always use Unwrangle">Unwrangle</button>
+			</form>
 		</div>
 			<div class="header-actions">
 				<label for="theme-select">Theme</label>
-					<select id="theme-select">
+					<select id="theme-select" class="theme-dropdown">
 						<option value="default">Warm</option>
 						<option value="ocean">Ocean</option>
+						<option value="forest">Forest</option>
 						<option value="midnight">Midnight</option>
 					</select>
 				<button class="env-button" type="button" onclick="document.getElementById('env-editor').showModal()">Edit .env</button>
 				<span class="status {{ '' if serpapi_ready else 'warning' }}">
-					{{ 'API ready' if serpapi_ready else 'API key needed' }}
+					SerpApi {{ 'ready' if serpapi_ready else 'API key needed' }}
+				</span>
+				<span class="status {{ '' if unwrangle_ready else 'warning' }}">
+					Unwrangle {{ 'ready' if unwrangle_ready else 'API key needed' }}
 				</span>
 			</div>
 	</header>
@@ -44,41 +59,70 @@
 			<div class="modal-content">
 				<form method="post" action="{{ url_for('save_env_file') }}">
 					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-					<textarea class="env-textarea" name="env_content" spellcheck="false">{{ env_file_text }}</textarea>
+					<label for="env-editor-textarea">Environment File Content</label>
+					<textarea id="env-editor-textarea" class="env-textarea" name="env_content" spellcheck="false">{{ env_file_text }}</textarea>
 					<div class="modal-actions">
 						<button type="submit">Save .env</button>
 					</div>
 				</form>
 			</div>
 		</dialog>
-  <div class="notice">Use responsibly. Retailer pages can change, impose rate limits, or prohibit automated access. This tool spaces requests, uses a daily scan limit, and never bypasses CAPTCHAs or access controls. Unless you are specifically using SerpApi, then check your current plan.</div>
+  <div class="notice">Use responsibly. Retailer pages can change, impose rate limits, or prohibit automated access. This tool spaces requests, uses a daily scan limit, and never bypasses CAPTCHAs or access controls. Check your current plan limits for SerpApi and Unwrangle.</div>
   {% if message %}<p class="notice">{{ message }}</p>{% endif %}
 	{% if not serpapi_ready %}<p class="notice"><strong>One setup step:</strong> set <code>SERPAPI_API_KEY</code> in the same terminal used to start this app, then restart it.</p>{% endif %}
+	{% if not unwrangle_ready %}<p class="notice"><strong>One setup step:</strong> set <code>UNWRANGLE_API_KEY</code> in the same terminal used to start this app, then restart it.</p>{% endif %}
 	<section>
 		<h2>Track a product</h2>
 		<form method="post" action="{{ url_for('add_url') }}">
 			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-			<input name="url" type="url" placeholder="Paste a Walmart or Home Depot product URL" aria-label="Product URL" required>
+			<input name="url" type="url" placeholder="Paste a product URL here" aria-label="Product URL" required>
 			<button>Add URL</button>
+			<label class="duplicate-option"><input name="allow_duplicate" type="checkbox"> Track another store</label>
 		</form>
-		<p class="help">Supported now: Walmart and Home Depot product pages. You can track up to {{ max_urls }} URLs.</p>
+		<p class="help">Supported now: Walmart and Home Depot (via SerpApi), plus Walmart, Home Depot, Lowes, Ace Hardware, and Sams Club (via Unwrangle). Check “Track another store” when adding the same product for a different store. You can track up to {{ max_urls }} URLs.</p>
 	</section>
 	<section>
 		<h2>Daily check</h2>
 		<form method="post" action="{{ url_for('scan') }}">
 			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-			<button {% if not can_scan or not products or not serpapi_ready %}disabled{% endif %}>
+			<button {% if not can_scan or not products or not provider_is_ready %}disabled{% endif %}>
 				{{ 'Check prices' if can_scan else 'Checked for today' }}
 			</button>
 			<span class="muted">
 				{% if last_scan %}Last check: {{ last_scan }}{% else %}No check yet. Add a URL, then check prices.{% endif %}
 			</span>
 		</form>
-		<p class="help">Each URL is checked through SerpApi, then saved locally so you can review the result later.</p>
-		<div class="export-actions">
-			<a class="export-button" href="{{ url_for('export_watchlist_json') }}">Export JSON</a>
-			<a class="export-button" href="{{ url_for('export_watchlist_csv') }}">Export CSV</a>
+		<p class="help">Each URL is checked through the selected API provider ({{ api_provider }}), then saved locally so you can review the result later.</p>
+		<div class="watchlist-actions">
+			<button class="export-button import-button" type="button" onclick="document.getElementById('import-db').showModal()">Import database</button>
+			<div class="export-actions">
+				<a class="export-button" href="{{ url_for('export_watchlist_json') }}">Export JSON</a>
+				<a class="export-button" href="{{ url_for('export_watchlist_csv') }}">Export CSV</a>
+				<a class="export-button" href="{{ url_for('export_watchlist_db') }}">Export database</a>
+			</div>
 		</div>
+		<dialog class="history-modal" id="import-db">
+			<div class="modal-header">
+				<div>
+					<p class="eyebrow">Switch watchlists</p>
+					<h3>Import database</h3>
+				</div>
+				<form method="dialog">
+					<button class="modal-close" aria-label="Close import database">Close</button>
+				</form>
+			</div>
+			<div class="modal-content">
+				<form method="post" action="{{ url_for('import_watchlist_db') }}" enctype="multipart/form-data">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					<p class="help">Pick a .sqlite3, .csv, or .json watchlist exported from this app (yours or someone else's). Your current database is backed up automatically before it's replaced.</p>
+					<label for="database-file">Database file</label>
+					<input id="database-file" name="database_file" type="file" accept=".sqlite3,.sqlite,.db,.csv,.json" required>
+					<div class="modal-actions">
+						<button type="submit">Import database</button>
+					</div>
+				</form>
+			</div>
+		</dialog>
 	</section>
 	<section>
 		<h2>Your watchlist <span class="muted">({{ products|length }})</span></h2>
@@ -105,12 +149,58 @@
 							{{ product.error }}
 						</div>{% endif %}
 					</td>
-					<td>{{ product.source }}</td>
-					<td class="{{ 'price' if product.price is not none else 'muted' }}">{{ ('$%.2f' % product.price) if product.price is not none else 'Waiting for check' }}</td>
+					<td>
+						<button class="retailer-button" type="button" onclick="document.getElementById('store-{{ product.id }}').showModal()">{{ product.source }}</button>
+						{% set selected_store = (stores_by_retailer.get(product.source, []) | selectattr('store_id', 'equalto', product.store_id) | list | first) %}
+						{% if selected_store %}<span class="store-number">Store {{ selected_store.store_id }} · {{ selected_store.name }}</span>{% elif product.store_id %}<span class="store-number">Store {{ product.store_id }}</span>{% else %}<span class="store-number muted">All stores</span>{% endif %}
+						<dialog class="history-modal store-modal" id="store-{{ product.id }}">
+							<div class="modal-header">
+								<div>
+									<p class="eyebrow">Store selection</p>
+									<h3>{{ product.source }}</h3>
+								</div>
+								<form method="dialog"><button class="modal-close" aria-label="Close store selection">Close</button></form>
+							</div>
+							<div class="modal-content">
+								<form method="post" action="{{ url_for('set_store', product_id=product.id) }}">
+									<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+									<label for="store-id-{{ product.id }}">Saved store</label>
+									<select id="store-id-{{ product.id }}" name="store_id">
+										<option value="">All stores</option>
+										{% for store in stores_by_retailer.get(product.source, []) %}
+										<option value="{{ store.store_id }}" {% if product.store_id == store.store_id %}selected{% endif %}>{{ store.name }} · {{ store.location }} · Store {{ store.store_id }}</option>
+										{% endfor %}
+									</select>
+									<div class="modal-actions"><button type="submit">Save store</button></div>
+								</form>
+								<hr>
+								<form method="post" action="{{ url_for('add_store') }}">
+									<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+									<input type="hidden" name="retailer" value="{{ product.source }}">
+									<p class="eyebrow">Add saved store</p>
+									<label for="store-number-{{ product.id }}">Store number</label>
+									<input id="store-number-{{ product.id }}" name="store_id" inputmode="numeric" pattern="[0-9]*" placeholder="4638" required>
+									<p class="help">The store name and location will be filled in from the retailer response after the next successful check.</p>
+									<div class="modal-actions"><button type="submit">Add store</button></div>
+								</form>
+							</div>
+						</dialog>
+					</td>
+					<td class="{{ 'price' if product.price is not none else 'muted' }}">
+						{% if product.price is not none %}
+						<div>${{ '%.2f'|format(product.price) }}</div>
+						{% if product.bulk_price is not none and product.bulk_quantity is not none %}<div class="bulk-price">${{ '%.2f'|format(product.bulk_price) }} when you buy {{ product.bulk_quantity }}+</div>{% endif %}
+						{% else %}Waiting for check{% endif %}
+					</td>
 					<td class="muted">{{ product.checked_at or 'Not checked yet' }}</td>
 					<td>
 						<div class="row-actions">
 							<button class="history-button" type="button" {% if not product.chart %}disabled{% else %}onclick="document.getElementById('history-{{ product.id }}').showModal()"{% endif %}>{{ 'View history graph' if product.chart else 'No history yet' }}</button>
+							{% if developer_mode or product.error %}<form method="post" action="{{ url_for('recheck_url', product_id=product.id) }}">
+								<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+								<button class="recheck-button" title="Re-check this item">Re-check</button>
+							</form>
+							{% endif %}
 							<form method="post" action="{{ url_for('remove_url', product_id=product.id) }}">
 								<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 								<button class="remove" title="Remove URL">Remove from Search</button>

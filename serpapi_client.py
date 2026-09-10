@@ -9,9 +9,16 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from urllib.request import urlopen
 
 """
-Use SerpApi to fetch product information, and keep it in lists
+SerpApi API Currently Implemented:
+- Walmart
+- Home Depot
+Planned:
+- Amazon
 
-Last Update: 8/24/2026
+Use SerpApi to fetch product information, and keep it in lists.
+The free version of SerpApi allows for 250 searches per month, you can comfortable search 57ish items per week, or 8 items a day.
+
+Last Update: 9/1/2026
 Written on: 7/27/2026
 Written by: AJ Utz
 """
@@ -74,6 +81,54 @@ def product_price(value: Any) -> float | None:
     return None
 
 
+def product_bulk_price(value: Any, regular_price: float | None = None) -> tuple[float, int] | None:
+    """Find a bulk price and the minimum quantity needed to receive it."""
+    if not isinstance(value, dict):
+        return None
+    for quantity_key in ("bulk_price_quantity", "bulk_price_threshold"):
+        if "bulk_price" in value and quantity_key in value:
+            price = product_price(value["bulk_price"])
+            quantity = parse_quantity(value[quantity_key])
+            if price is not None and quantity is not None and quantity > 1 and (regular_price is None or price < regular_price):
+                return price, quantity
+    price = None
+    quantity = None
+    for key, candidate in value.items():
+        normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if isinstance(candidate, str):
+            quantity = quantity or parse_quantity(candidate)
+        if ("bulk" in normalized_key or "volume" in normalized_key) and ("price" in normalized_key or "cost" in normalized_key):
+            price = product_price(candidate)
+            quantity = quantity or parse_quantity(candidate)
+        elif any(token in normalized_key for token in ("quantity", "qty", "minimum", "min")):
+            quantity = parse_quantity(candidate)
+    if price is not None and quantity is not None and quantity > 1 and (regular_price is None or price < regular_price):
+        return price, quantity
+    for nested in value.values():
+        if isinstance(nested, dict):
+            bulk = product_bulk_price(nested, regular_price)
+            if bulk:
+                return bulk
+        elif isinstance(nested, list):
+            for item in nested:
+                if isinstance(item, dict):
+                    bulk = product_bulk_price(item, regular_price)
+                    if bulk:
+                        return bulk
+    return None
+
+
+def parse_quantity(value: Any) -> int | None:
+    if isinstance(value, (int, float)) and int(value) == value:
+        return int(value)
+    text = str(value)
+    for pattern in (r"\b(?:buy|for)\s+(\d+)", r"\b(?:qty|quantity)\s*:?\s*(\d+)", r"\bmin(?:imum)?(?:\s+order)?\s+quantity\s*:?\s*(\d+)"):
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 def product_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = [] #Init list to store candidates
 
@@ -89,6 +144,72 @@ def product_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(products, list):
         candidates.extend(item for item in products if isinstance(item, dict))
     return candidates
+
+
+def store_name_from_payload(payload: dict[str, Any]) -> str | None:
+    """Find the Store's name from the store number"""
+    search_information = payload.get("search_information")
+    if isinstance(search_information, dict):
+        for key in ("store_name", "store"):
+            value = search_information.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        location = search_information.get("location")
+        if isinstance(location, dict):
+            value = location.get("store_name")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for opt_key in ("pickup_option", "delivery_option", "product_result"):
+        opt = payload.get(opt_key)
+        if isinstance(opt, dict):
+            if opt_key == "product_result":
+                p_opt = opt.get("pickup_option")
+                if isinstance(p_opt, dict) and isinstance(p_opt.get("location"), str) and p_opt["location"].strip():
+                    return p_opt["location"].strip()
+            elif isinstance(opt.get("location"), str) and opt["location"].strip():
+                return opt["location"].strip()
+    pr_list = payload.get("product_results") or payload.get("product_result")
+    if isinstance(pr_list, dict):
+        ful = pr_list.get("fulfillment")
+        if isinstance(ful, dict) and isinstance(ful.get("store"), str) and ful["store"].strip():
+            return ful["store"].strip()
+    return None
+
+
+def store_location_from_payload(payload: dict[str, Any]) -> str | None:
+    """Find the location data from the payload"""
+    search_information = payload.get("search_information")
+    if isinstance(search_information, dict):
+        location = search_information.get("location")
+        if isinstance(location, str) and location.strip():
+            return location.strip()
+        if isinstance(location, dict):
+            city = location.get("city")
+            state = location.get("state") or location.get("province") or location.get("province_code")
+            zip_code = location.get("postal_code") or location.get("zip")
+            parts = [p for p in (city, state, zip_code) if p]
+            if parts:
+                return ", ".join(str(p).strip() for p in parts)
+        for key in ("store_location", "address", "store_address"):
+            value = search_information.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for opt_key in ("delivery_option", "product_result"):
+        opt = payload.get(opt_key)
+        if isinstance(opt, dict):
+            if opt_key == "product_result":
+                d_opt = opt.get("delivery_option")
+                if isinstance(d_opt, dict) and isinstance(d_opt.get("location"), str) and d_opt["location"].strip():
+                    return d_opt["location"].strip()
+            elif isinstance(opt.get("location"), str) and opt["location"].strip():
+                return opt["location"].strip()
+    sp = payload.get("search_parameters")
+    if isinstance(sp, dict):
+        for key in ("delivery_zip", "location", "zip"):
+            value = sp.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
 
 
 def retailer_for(url: str) -> str:
@@ -144,6 +265,7 @@ class SerpApiClient:
         """
         self.api_key = api_key or os.environ.get("SERPAPI_API_KEY")
         self.timeout_seconds = max(30, int(os.environ.get("SERPAPI_TIMEOUT_SECONDS", "90")))
+        self.response_history: list[dict[str, Any]] = []
         if not self.api_key:
             raise SerpApiError("SERPAPI_API_KEY is not configured.")
 
@@ -164,37 +286,55 @@ class SerpApiClient:
             ) from error
         except Exception as error: #Request related error
             raise SerpApiError(f"SerpApi {engine} request failed: {error}") from error
+        self.response_history.append(payload)
         #Check for errors in the resonce payload
         if payload.get("error"):
             raise SerpApiError(f"SerpApi error: {payload['error']}")
         return payload
 
-    def product(self, url: str) -> dict[str, object]:
+    def product(self, url: str, store_id: str | None = None) -> dict[str, object]:
         reference = product_reference(url) #determine the retailer
         if reference.retailer == "walmart":
-            return self.walmart_product(reference)
-        return self.home_depot_product(reference)
+            return self.walmart_product(reference, store_id)
+        return self.home_depot_product(reference, store_id)
 
-    def walmart_product(self, reference: ProductReference) -> dict[str, object]:
+    def walmart_product(self, reference: ProductReference, store_id: str | None = None) -> dict[str, object]:
         #check if the product ID is available
         if not reference.product_id:
             raise SerpApiError("The Walmart URL does not contain a product ID.")
         #Request the product details from Walmart
-        payload = self.request("walmart_product", product_id=reference.product_id)
+        parameters = {"product_id": reference.product_id, "q": reference.query or reference.product_id}
+        if store_id:
+            parameters["store_id"] = store_id
+        payload = self.request("walmart_product", **parameters)
         #extract the payload result and price
         result = payload.get("product_result") or {}
         price = product_price(result)
         if price is None: #If price is not found
             raise SerpApiError("Walmart returned the product but no price.")
         #Return product details
-        return {"title": result.get("title") or reference.query, "price": price, "currency": result.get("currency", "USD")}
+        product = {"title": result.get("title") or reference.query, "price": price, "currency": result.get("currency", "USD")}
+        bulk = product_bulk_price(result, price)
+        if bulk:
+            product["bulk_price"], product["bulk_quantity"] = bulk
+        store_name = store_name_from_payload(payload)
+        if store_name:
+            product["store_name"] = store_name
+        store_location = store_location_from_payload(payload)
+        if store_location:
+            product["store_location"] = store_location
+        return product
 
-    def home_depot_product(self, reference: ProductReference) -> dict[str, object]:
+    def home_depot_product(self, reference: ProductReference, store_id: str | None = None) -> dict[str, object]:
+        search: dict[str, Any] = {}
         #Determine the product ID from the URl or search Results
         product_id = reference.product_id
         if not product_id:
             # Perform a search on Home Depot
-            search = self.request("home_depot", q=reference.query, country="us")
+            parameters = {"q": reference.query, "country": "us"}
+            if store_id:
+                parameters["store_id"] = store_id
+            search = self.request("home_depot", **parameters)
             # Find the Product ID from the search results
             for result in search.get("products", []):
                 if isinstance(result, dict) and result.get("product_id"):
@@ -203,7 +343,10 @@ class SerpApiClient:
         if not product_id: #Error if product ID is not found
             raise SerpApiError("Home Depot search did not return a product ID.")
         #Request the product details from Home Depot
-        payload = self.request("home_depot_product", product_id=product_id, country="us")
+        parameters = {"product_id": product_id, "q": reference.query or product_id, "country": "us"}
+        if store_id:
+            parameters["store_id"] = store_id
+        payload = self.request("home_depot_product", **parameters)
         #Extract the product candidates and price
         candidates = product_candidates(payload)
         result = next((candidate for candidate in candidates if product_price(candidate) is not None), None)
@@ -211,4 +354,16 @@ class SerpApiClient:
             keys = ", ".join(sorted(payload.keys())) or "no response fields"
             raise SerpApiError(f"Home Depot returned the product but no price. Response fields: {keys}.")
         price = product_price(result) #Return product details
-        return {"title": result.get("title") or reference.query, "price": price, "currency": "USD"}
+        store_name = store_name_from_payload(payload)
+        if not store_name:
+            store_name = store_name_from_payload(search)
+        product = {"title": result.get("title") or reference.query, "price": price, "currency": "USD"}
+        bulk = product_bulk_price(result)
+        if bulk:
+            product["bulk_price"], product["bulk_quantity"] = bulk
+        if store_name:
+            product["store_name"] = store_name
+        store_location = store_location_from_payload(payload) or store_location_from_payload(search)
+        if store_location:
+            product["store_location"] = store_location
+        return product

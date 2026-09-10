@@ -3,9 +3,10 @@
     color: var(--text);
     color-scheme: light;
     font-family: Georgia, serif;
+    font-weight: 700;
 
-    --page-background: #f3f0e8;
-    --surface: #fffdf8;
+    --page-background: #f1e5c4;
+    --surface: #fff8e7;
     --text: #202820;
     --muted-text: #596257;
     --subtle-text: #6c756b;
@@ -41,16 +42,33 @@
     --page-background: #20252a;
     --surface: #2b3238;
     --text: #f1f4ed;
-    --muted-text: #c0ccc4;
+    --muted-text: #99c9a9;
     --subtle-text: #9eaca4;
     --border: #536069;
     --accent: #e58b52;
-    --accent-dark: #76c7a4;
+    --accent-dark: #5a997e;
     --notice-background: #51452f;
     --success-background: #29463b;
     --error-background: #522f32;
     --error-text: #ffaaa0;
     --danger-background: #ac2e1b;
+    --danger-text: #ec4126;
+}
+
+[data-theme="forest"] {
+    --page-background: #294630;
+    --surface: #32573a;
+    --text: #f1f4ed;
+    --muted-text: #9aa39d;
+    --subtle-text: #9eaca4;
+    --border: #536069;
+    --accent: #a78155;
+    --accent-dark: #a78155;
+    --notice-background: #8f7a53;
+    --success-background: #437c3e;
+    --error-background: #522f32;
+    --error-text: #ffaaa0;
+    --danger-background: #c93822;
     --danger-text: #ec4126;
 }
 
@@ -143,6 +161,34 @@ h1 {
     padding: 8px 12px;
 }
 
+.provider-select {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+    margin: 0;
+}
+
+.provider-label {
+    color: var(--muted-text);
+    font: 700 .78rem system-ui, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    white-space: nowrap;
+}
+
+.provider-button {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 10px;
+}
+
+.provider-button.active {
+    background: var(--accent-dark);
+    border-color: var(--accent-dark);
+    color: #fff;
+}
+
 section {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -164,6 +210,24 @@ input[type=url] {
     font-size: 1rem;
     min-width: 0;
     padding: 12px;
+}
+
+.duplicate-option {
+    align-items: center;
+    color: var(--muted-text);
+    display: flex;
+    font: .88rem/1.45 system-ui, sans-serif;
+    gap: 6px;
+}
+
+input[type=text], input:not([type]), select {
+    border: 1px solid #9ca597;
+    font-size: 1rem;
+    min-width: 0;
+    padding: 10px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    cursor: pointer;
 }
 
 button {
@@ -233,6 +297,11 @@ th {
     font-weight: 700; 
 }
 
+.bulk-price{
+    font-size: .78rem;
+    font-weight: 400;
+}
+
 .product-link { 
     color: var(--text); 
     font-weight: 700; 
@@ -247,11 +316,16 @@ th {
 }
 
 .row-actions { 
-    align-items: center; 
+    align-items: stretch; 
     display: flex; 
-    flex-wrap: wrap; 
+    flex-direction: column; 
     gap: 8px; 
     min-width: 0;
+}
+
+.row-actions > button,
+.row-actions > form > button {
+    width: 100%;
 }
 
 .history-button { 
@@ -260,6 +334,25 @@ th {
 }
 
 .history-button[disabled] { background: #9ca597; }
+
+.recheck-button {
+    background: var(--accent-dark);
+    padding: 6px 10px;
+}
+
+.retailer-button {
+    background: transparent;
+    color: var(--text);
+    padding: 0;
+    text-align: left;
+    text-decoration: underline;
+}
+
+.store-number {
+    display: block;
+    font-size: .78rem;
+    margin-top: 4px;
+}
 
 .history-modal { 
     border: 1px solid var(--border); 
@@ -286,10 +379,33 @@ th {
     background: var(--page-background); 
     border: 1px solid #9ca597; 
     color: var(--text); 
+    flex-shrink: 0;
     padding: 6px 10px; 
+    white-space: nowrap;
 }
 
 .modal-content { padding: 12px 20px 20px; }
+
+.modal-content form {
+    align-items: center;
+}
+
+.modal-content form label {
+    color: var(--muted-text);
+    font: .82rem system-ui, sans-serif;
+}
+
+.modal-content form select,
+.modal-content form input {
+    flex: 1 1 100%;
+    width: 100%;
+}
+
+.modal-content hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 20px 0;
+}
 
 .env-textarea { 
     border: 1px solid #9ca597; 
@@ -343,10 +459,19 @@ th {
     margin: 12px 0 0; 
 }
 
+.watchlist-actions {
+    align-items: flex-start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: space-between;
+    margin-top: 14px;
+}
+
 .export-actions { 
     display: flex; 
     flex-wrap: wrap; 
-    gap: 10px; margin-top: 14px; 
+    gap: 10px; 
 }
 .export-button { 
     background: var(--accent-dark); 
@@ -371,4 +496,10 @@ th {
     tr { border-bottom: 1px solid #dedbd2; padding: 12px 0; }
     td { border: 0; padding: 4px 0; }
     td:last-child { margin-top: 8px; }
+}
+
+.store-modal { width: 420px; }
+
+.theme-dropdown{
+    font-size: .82rem
 }
