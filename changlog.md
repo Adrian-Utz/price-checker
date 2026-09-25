@@ -14,4 +14,4 @@
 - Fix an error by checking if `history` is a list before iterating it, and that each history entry is a dictionary before accessing observation fields. Put `history-list` into a drop-down element. Added 2 new themes: royal purple and neon. Added user controlled time interval manipulation. Allowing you to set the desired time for the line graph. 
 
 # [v0.0.4](https://github.com/Adrian-Utz/price-checker/releases/tag/0.0.4)
-- Fixed parts of the chart's popup so it now accepts theme colors. 
+- Fixed parts of the chart's popup so it now accepts theme colors. This is mostly just a reupload to allow me to use git.
