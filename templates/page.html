@@ -1,0 +1,370 @@
+<!doctype html>
+<!--
+Beginning of the HTML main page for the program.
+
+Last Update: 9/25/2026
+Written on: 7/29/2026
+Written by: AJ Utz
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Price Checker</title>
+	<link rel="stylesheet" href="{{ url_for('static', filename='stylesheet.css') }}">
+</head>
+<body>
+	<header>
+		<!--Header should show the following info: dev mode, version number, update link, API selected, themes, and more.-->
+		<div>
+			<p class="eyebrow">Personal price watchlist</p>
+			<div class="title-line">
+				<h1>Price Checker</h1>
+				<span class="version">v{{ version_number }}</span>
+				{% if update_available %}
+				<a class="update-badge" href="{{ releases_url }}" target="_blank" rel="noopener noreferrer">Update available: {{ latest_version }}</a>
+				{% endif %}
+			</div>
+			{% if developer_mode %}
+			<p class="lede">Developer mode is enabled. Daily checks are unlocked, and raw API responses are being saved to the developer database.</p>
+			{% else %}
+			<p class="lede">A quiet, once-a-day watchlist for prices that matter.</p>
+			{% endif %}
+			<form class="provider-select" method="post" action="{{ url_for('set_api_provider') }}">
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				<span class="provider-label">API provider</span>
+				<button class="provider-button {{ 'active' if api_provider == 'auto' }}" name="provider" value="auto" title="Pick the best provider per retailer">Auto</button>
+				<button class="provider-button {{ 'active' if api_provider == 'serpapi' }}" name="provider" value="serpapi" title="Always use SerpApi">SerpApi</button>
+				<button class="provider-button {{ 'active' if api_provider == 'unwrangle' }}" name="provider" value="unwrangle" title="Always use Unwrangle">Unwrangle</button>
+			</form>
+		</div>
+			<div class="header-actions">
+				<label for="theme-select">Theme</label>
+					<select id="theme-select" class="theme-dropdown">
+						<option value="default">Warm</option>
+						<option value="ocean">Ocean</option>
+						<option value="forest">Forest</option>
+						<option value="midnight">Midnight</option>
+						<option value="neon">Neon</option>
+						<option value="royal-purple">Royal Purple</option>
+					</select>
+				<!--Env editor button-->
+				<button class="env-button" type="button" onclick="document.getElementById('env-editor').showModal()">Edit .env</button>
+				<!--Allerts if the user has configured their Api keys-->
+				<span class="status {{ '' if serpapi_ready else 'warning' }}">
+					SerpApi {{ 'ready' if serpapi_ready else 'API key needed' }}
+				</span>
+				<span class="status {{ '' if unwrangle_ready else 'warning' }}">
+					Unwrangle {{ 'ready' if unwrangle_ready else 'API key needed' }}
+				</span>
+			</div>
+	</header>
+		<dialog class="history-modal" id="env-editor">
+			<!--Editor popup for .env file, Allows the user to change their API key on the fly.-->
+			<div class="modal-header">
+				<div>
+					<p class="eyebrow">Settings</p>
+					<h3>Edit .env</h3>
+				</div>
+				<form method="dialog">
+					<button class="modal-close" aria-label="Close env editor">Close</button>
+				</form>
+			</div>
+			<div class="modal-content">
+				<form method="post" action="{{ url_for('save_env_file') }}">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					<label for="env-editor-textarea">Environment File Content</label>
+					<textarea id="env-editor-textarea" class="env-textarea" name="env_content" spellcheck="false">{{ env_file_text }}</textarea>
+					<div class="modal-actions">
+						<button type="submit">Save .env</button>
+					</div>
+				</form>
+			</div>
+		</dialog>
+  <div class="notice">Use responsibly. Notice! Your search may not always succeed! Retailer pages can change, impose rate limits, or prohibit access to their webpages that can disrupt the API's workflow. This tool spaces requests, and uses a daily scan limit. Check your current plan limits for SerpApi and Unwrangle.</div>
+  {% if message %}<p class="notice">{{ message }}</p>{% endif %}
+	{% if not serpapi_ready %}<p class="notice"><strong>One setup step:</strong> set <code>SERPAPI_API_KEY</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
+	{% if not unwrangle_ready %}<p class="notice"><strong>One setup step:</strong> set <code>UNWRANGLE_API_KEY</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
+	<section>
+		<!--In this section we have a place for user input, and the option to track another store-->
+		<h2>Track a product</h2>
+		<!--Here the user inputs a link to a supported retailer and the program adds it to the list-->
+		<form method="post" action="{{ url_for('add_url') }}">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			<input name="url" type="url" placeholder="Paste a product URL here" aria-label="Product URL" required>
+			<button>Add URL</button>
+			<label class="duplicate-option"><input name="allow_duplicate" type="checkbox"> Track another store</label>
+		</form>
+		<p class="help">Supported now: Walmart and Home Depot (via SerpApi), plus Walmart, Home Depot, Lowes, Ace Hardware, and Sams Club (via Unwrangle). Check “Track another store” when adding the same product for a different store. You can track up to {{ max_urls }} URLs.</p>
+	</section>
+	<section>
+		<!--Here the buttons perform the following tasks. Daily Check: If not in dev mode, press to check the entire list with the selected API provider.
+		Export JSON: Exports a JSON file of your database. Export CSV: Exports a CSV file of your database, Export Database: Exports a sqlite3 file of your database
+		Import Database: Accepts .json, .csv, .sqlite3, .sqlite, or .db files-->
+		<h2>Daily check</h2>
+		<form method="post" action="{{ url_for('scan') }}">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			<button {% if not can_scan or not products or not provider_is_ready %}disabled{% endif %}>
+				{{ 'Check prices' if can_scan else 'Checked for today' }}
+			</button>
+			<span class="muted">
+				{% if last_scan %}Last check: {{ last_scan }}{% else %}No check yet. Add a URL, then check prices.{% endif %}
+			</span>
+		</form>
+		<p class="help">Each URL is checked through the selected API provider ({{ api_provider }}), then saved locally so you can review the result later.</p>
+		<div class="watchlist-actions">
+			<button class="export-button import-button" type="button" onclick="document.getElementById('import-db').showModal()">Import database</button>
+			<div class="export-actions">
+				<a class="export-button" href="{{ url_for('export_watchlist_json') }}">Export JSON</a>
+				<a class="export-button" href="{{ url_for('export_watchlist_csv') }}">Export CSV</a>
+				<a class="export-button" href="{{ url_for('export_watchlist_db') }}">Export database</a>
+			</div>
+		</div>
+		<dialog class="history-modal" id="import-db">
+			<div class="modal-header">
+				<div>
+					<p class="eyebrow">Switch watchlists</p>
+					<h3>Import database</h3>
+				</div>
+				<form method="dialog">
+					<button class="modal-close" aria-label="Close import database">Close</button>
+				</form>
+			</div>
+			<div class="modal-content">
+				<form method="post" action="{{ url_for('import_watchlist_db') }}" enctype="multipart/form-data">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					<p class="help">Pick a .sqlite3, .csv, or .json watchlist exported from this app (yours or someone else's). Your current database is backed up automatically before it's replaced.</p>
+					<label for="database-file">Database file</label>
+					<input id="database-file" name="database_file" type="file" accept=".sqlite3,.sqlite,.db,.csv,.json" required>
+					<div class="modal-actions">
+						<button type="submit">Import database</button>
+					</div>
+				</form>
+			</div>
+		</dialog>
+	</section>
+	<section>
+		<!--Starting section of your watchlist-->
+		<h2>Your watchlist <span class="muted">({{ products|length }})</span></h2>
+		{% if products %}
+		<table>
+			<thead>
+				<tr>
+					<th>Product</th>
+					<th>Retailer</th>
+					<th>Price</th>
+					<th>Last checked</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				<!--As long as there is a product in the table show it on the watchlist.-->
+				{% for product in products %}
+				<tr>
+					<td>
+						<a class="product-link" href="{{ product.url }}" rel="noreferrer">{{ product.title or 'Product waiting for first check' }}</a>
+						<span class="product-url muted">{{ product.url }}</span>
+						{% if product.error %}
+						<div class="error">
+							<strong>Could not get price:</strong> 
+							{{ product.error }}
+						</div>{% endif %}
+					</td>
+					<td>
+						<button class="retailer-button" type="button" onclick="document.getElementById('store-{{ product.id }}').showModal()">{{ product.source }}</button>
+						{% set selected_store = (stores_by_retailer.get(product.source, []) | selectattr('store_id', 'equalto', product.store_id) | list | first) %}
+						{% if selected_store %}<span class="store-number">Store {{ selected_store.store_id }} · {{ selected_store.name }}</span>{% elif product.store_id %}<span class="store-number">Store {{ product.store_id }}</span>{% else %}<span class="store-number muted">All stores</span>{% endif %}
+						<dialog class="history-modal store-modal" id="store-{{ product.id }}">
+							<div class="modal-header">
+								<div>
+									<p class="eyebrow">Store selection</p>
+									<h3>{{ product.source }}</h3>
+								</div>
+								<form method="dialog"><button class="modal-close" aria-label="Close store selection">Close</button></form>
+							</div>
+							<div class="modal-content">
+								<form method="post" action="{{ url_for('set_store', product_id=product.id) }}">
+									<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+									<label for="store-id-{{ product.id }}">Saved store</label>
+									<select id="store-id-{{ product.id }}" name="store_id">
+										<option value="">All stores</option>
+										{% for store in stores_by_retailer.get(product.source, []) %}
+										<option value="{{ store.store_id }}" {% if product.store_id == store.store_id %}selected{% endif %}>{{ store.name }} · {{ store.location }} · Store {{ store.store_id }}</option>
+										{% endfor %}
+									</select>
+									<div class="modal-actions"><button type="submit">Save store</button></div>
+								</form>
+								<hr>
+								<form method="post" action="{{ url_for('add_store') }}">
+									<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+									<input type="hidden" name="retailer" value="{{ product.source }}">
+									<p class="eyebrow">Add saved store</p>
+									<label for="store-number-{{ product.id }}">Store number</label>
+									<input id="store-number-{{ product.id }}" name="store_id" inputmode="numeric" pattern="[0-9]*" placeholder="4638" required>
+									<p class="help">The store name and location will be filled in from the retailer response after the next successful check.</p>
+									<div class="modal-actions"><button type="submit">Add store</button></div>
+								</form>
+							</div>
+						</dialog>
+					</td>
+					<td class="{{ 'price' if product.price is not none else 'muted' }}">
+						{% if product.price is not none %}
+						<div>${{ '%.2f'|format(product.price) }}</div>
+						{% if product.bulk_price is not none and product.bulk_quantity is not none %}<div class="bulk-price">${{ '%.2f'|format(product.bulk_price) }} when you buy {{ product.bulk_quantity }}+</div>{% endif %}
+						{% else %}Waiting for check{% endif %}
+					</td>
+					<td class="muted">{{ product.checked_at or 'Not checked yet' }}</td>
+					<td>
+						<!--Buttons in the table. History graph, Re-check, and remove item-->
+						<div class="row-actions">
+							<button class="history-button" type="button" {% if not product.chart %}disabled{% else %}onclick="document.getElementById('history-{{ product.id }}').showModal()"{% endif %}>{{ 'View history graph' if product.chart else 'No history yet' }}</button>
+							{% if developer_mode or product.error %}<form method="post" action="{{ url_for('recheck_url', product_id=product.id) }}">
+								<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+								<button class="recheck-button" title="Re-check this item">Re-check</button>
+							</form>
+							{% endif %}
+							<form method="post" action="{{ url_for('remove_url', product_id=product.id) }}">
+								<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+								<button class="remove" title="Remove URL">Remove from Search</button>
+							</form>
+						</div>
+						<dialog class="history-modal" id="history-{{ product.id }}">
+							<div class="modal-header">
+								<div>
+									<p class="eyebrow">Price history</p>
+									<h3>{{ product.title or product.url }}</h3>
+								</div>
+								<div class="modal-header-actions">
+									<form method="dialog">
+									<button class="modal-close" aria-label="Close price history">Close</button>
+									</form>
+								</div>
+							</div>
+							<!--Chart details, this includes the date choice, export actions, and history of past prices-->
+							<div class="modal-content">{% if product.chart %}
+								<div class="chart-panel" data-product-id="{{ product.id }}">
+									<div class="chart-range-control">
+										<label for="chart-start-{{ product.id }}">From</label>
+										<input id="chart-start-{{ product.id }}" type="date" data-chart-start min="{{ product.chart_min_date }}" max="{{ product.chart_end_date }}" value="{{ product.chart_start_date }}">
+										<label for="chart-end-{{ product.id }}">To</label>
+										<input id="chart-end-{{ product.id }}" type="date" data-chart-end min="{{ product.chart_min_date }}" max="{{ product.chart_end_date }}" value="{{ product.chart_end_date }}">
+										<button type="button" onclick="setChartRange(this)">Apply</button>
+									</div>
+									<div class="chart-container">{{ product.chart }}</div>
+									<div class="chart-export-actions">
+										<label class="chart-export-option"><input type="checkbox" data-export-entire-history> Entire history</label>
+										<button class="chart-export-button" type="button" data-chart-dialog="history-{{ product.id }}" data-product-id="{{ product.id }}" data-filename="{{ product.title or 'price-history' }}" onclick="exportChartImage(this)">Download PNG</button>
+									</div>
+								</div>
+								{% else %}<p class="chart-empty">Price history appears after a successful check.</p>{% endif %}{% if product.history_rows %}
+								<details class="history-details">
+									<summary class="summary-dropdown">Price Checks({{ product.history_rows|length }})</summary>
+									<ol class="history-list">
+										{% for item in product.history_rows %}
+										<li>${{ '%.2f'|format(item.price) }} on {{ item.observed_at_utc }}</li>
+										{% endfor %}
+									</ol>
+								</details>
+								{% else %}
+								<p class="history-empty">No past prices yet.</p>
+								{% endif %}
+							</div>
+						</dialog>
+					</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+		{% else %}
+		<p class="muted">Your watchlist is empty. Paste a product URL above to get started.</p>
+		{% endif %}
+	</section>
+</body></html>
+<script>
+	//Local server shutdown request when user closes page
+    window.addEventListener("pagehide", function (event) {
+        if (!event.persisted) {
+            navigator.sendBeacon("{{ url_for('shutdown') }}");
+        }
+    });
+</script>
+<script>
+	//Theme changing script. Data is saved on the browser's profile database on the users hard drive.
+	const themeSelect = document.getElementById("theme-select");
+	const savedTheme = localStorage.getItem("price-checker-theme") || "default";
+
+	document.documentElement.dataset.theme = savedTheme;
+	themeSelect.value = savedTheme;
+
+	themeSelect.addEventListener("change", function () {
+		document.documentElement.dataset.theme = this.value;
+		localStorage.setItem("price-checker-theme", this.value);
+	});
+</script>
+<script>
+	//Line Chart exporting
+	function exportChartImage(button) {
+		const dialog = document.getElementById(button.dataset.chartDialog);
+		const svg = dialog.querySelector("svg");
+		const exportEntireHistory = dialog.querySelector("[data-export-entire-history]").checked;
+		if (exportEntireHistory) {
+			fetch(`/chart/${button.dataset.productId}?all=1`)
+				.then(function (response) {
+					if (!response.ok) {
+						throw new Error("Could not load the complete price history.");
+					}
+					return response.text();
+				})
+				.then(function (chart) {
+					downloadChartImage(chart, `${button.dataset.filename}-full-history`);
+				});
+			return;
+		}
+		downloadChartImage(new XMLSerializer().serializeToString(svg), button.dataset.filename);
+	}
+	//Download the image as a png
+	function downloadChartImage(serializedSvg, filename) {
+		const svg = new DOMParser().parseFromString(serializedSvg, "image/svg+xml").documentElement;
+		const viewBox = svg.viewBox.baseVal;
+		const image = new Image();
+		const canvas = document.createElement("canvas");
+		const exportScale = 4;
+		canvas.width = viewBox.width * exportScale;
+		canvas.height = viewBox.height * exportScale;
+		image.onload = function () {
+			const context = canvas.getContext("2d");
+			context.fillStyle = "#f7f8f2";
+			context.fillRect(0, 0, canvas.width, canvas.height);
+			context.drawImage(image, 0, 0, canvas.width, canvas.height);
+			const link = document.createElement("a");
+			link.download = `${filename.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "price-history"}.png`;
+			link.href = canvas.toDataURL("image/png");
+			link.click();
+		};
+		image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(serializedSvg)}`;
+	}
+	function setChartRange(button) {
+		const panel = button.closest(".chart-panel");
+		const start = panel.querySelector("[data-chart-start]");
+		const end = panel.querySelector("[data-chart-end]");
+		if (start.value > end.value) {
+			end.setCustomValidity("The end date must be on or after the start date.");
+			end.reportValidity();
+			return;
+		}
+		end.setCustomValidity("");
+		button.disabled = true;
+		fetch(`/chart/${panel.dataset.productId}?start=${encodeURIComponent(start.value)}&end=${encodeURIComponent(end.value)}`)
+			.then(function (response) {
+				if (!response.ok) {
+					throw new Error("Could not load price history.");
+				}
+				return response.text();
+			})
+			.then(function (chart) {
+				panel.querySelector(".chart-container").innerHTML = chart;
+			})
+			.finally(function () {
+				button.disabled = false;
+			});
+	}
+</script>
