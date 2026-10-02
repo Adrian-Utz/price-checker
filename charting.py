@@ -9,7 +9,7 @@ from markupsafe import Markup
 """
 This file contains the functions needed for line chart creation.
 
-Last Update: 10/1/2026
+Last Update: 10/2/2026
 Written on: 10/1/2026
 Written by: AJ Utz
 """
