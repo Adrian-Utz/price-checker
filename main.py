@@ -1,5 +1,26 @@
 from __future__ import annotations
 
+# Python 3.15+ defers these imports; older versions ignore this allowlist.
+__lazy_modules__ = {
+	"json",
+	"csv",
+	"io",
+	"math",
+	"random",
+	"re",
+	"shutil",
+	"sqlite3",
+	"time",
+	"datetime",
+	"urllib.parse",
+	"serpapi_client",
+	"unwrangle_client",
+	"charting",
+	"version",
+	"check_for_update",
+	"werkzeug.serving",
+}
+
 import json
 import csv
 import contextlib
@@ -20,9 +41,9 @@ from dotenv import load_dotenv
 from urllib.parse import unquote, urlparse
 
 from flask import Flask, Response, abort, redirect, render_template, request, send_file, session, url_for
-from markupsafe import Markup
-from serpapi_client import SerpApiClient
-from unwrangle_client import UnwrangleClient
+from serpapi_client import SerpApiClient, product_bulk_price as serpapi_bulk_price, product_candidates, product_price as serpapi_product_price
+from unwrangle_client import UnwrangleClient, product_bulk_price as unwrangle_bulk_price, product_price as unwrangle_product_price, product_reference as unwrangle_product_reference
+from charting import chart_observations_in_range, format_observed_at_utc, price_chart
 from version import VERSION_NUMBER
 import check_for_update
 from werkzeug.serving import make_server
@@ -31,7 +52,7 @@ from werkzeug.serving import make_server
 Main entry point into the program. This is a web application with a python backend. Used to keep track of certian items that the user selects.
 Made with Flask.
 
-Last Update: 9/25/2026
+Last Update: 9/28/2026
 Written on: 7/27/2026
 Written by: AJ Utz
 """
@@ -45,9 +66,9 @@ DEV_DATABASE_PATH = Path(os.environ.get("PRICE_CHECKER_DEV_DB", ROOT / "price_ch
 MAX_URLS = max(20, min(int(os.environ.get("PRICE_CHECKER_MAX_URLS", "100")), 100)) #Change this variable if you want to track more items.
 CACHE_HOURS = max(1, int(os.environ.get("PRICE_CHECKER_CACHE_HOURS", "24")))
 MIN_DELAY_SECONDS = max(1.0, float(os.environ.get("PRICE_CHECKER_MIN_DELAY", "4")))
-MAX_CHART_POINTS = 12
 MAX_FULL_CHART_WIDTH = 2400
 DEFAULT_CHART_RANGE_DAYS = 30
+API_USAGE_CACHE_SECONDS = 300
 app = Flask(__name__)
 app.secret_key = os.environ.get("PRICE_CHECKER_SECRET", secrets.token_hex(32))
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024 #Cap uploaded database files at 64 MB
@@ -56,6 +77,15 @@ shutdown_lock = threading.Lock()
 shutdown_timer = None
 update_info = {"available": False, "latest_version": None}
 update_info_lock = threading.Lock()
+api_usage_lock = threading.Lock()
+api_usage = {
+	"serpapi_remaining": None,
+	"serpapi_monthly_limit": None,
+	"serpapi_monthly_used": None,
+	"unwrangle_remaining": None,
+	"unwrangle_starting_credits": None,
+}
+serpapi_usage_checked_at = 0.0
 
 
 def check_for_update_background() -> None:
@@ -72,7 +102,8 @@ def check_for_update_background() -> None:
 @contextlib.contextmanager
 def connect():
 	"""
-	Open a SQLite connection, commit (or roll back) on exit like a plain sqlite3.Connection would,
+	## Open a SQLite connection
+	Allow commits (or roll backs) on exit like a plain sqlite3. Connection would,
 	but also close the connection - sqlite3.Connection's own context manager never closes the file,
 	which left stale open handles on DATABASE_PATH and blocked database import/replace on Windows.
 	"""
@@ -138,9 +169,68 @@ def record_dev_api_responses(url: str, provider: str, responses: list[dict[str, 
 			)
 
 
+def _find_json_field(value: object, field_names: tuple[str, ...], path: str = "$") -> tuple[str | None, object]:
+	if isinstance(value, dict):
+		for name in field_names:
+			if name in value and value[name] is not None:
+				return f"{path}.{name}", value[name]
+		for key, nested in value.items():
+			found_path, found_value = _find_json_field(nested, field_names, f"{path}.{key}")
+			if found_path:
+				return found_path, found_value
+	elif isinstance(value, list):
+		for index, nested in enumerate(value):
+			found_path, found_value = _find_json_field(nested, field_names, f"{path}[{index}]")
+			if found_path:
+				return found_path, found_value
+	return None, None
+
+
+def replay_dev_response(provider: str, url: str, payload: dict[str, object]) -> dict[str, object]:
+	"""Show the user what is being pulled from the raw JSON"""
+	if provider == "SerpApiClient":
+		candidates = product_candidates(payload)
+		candidate = next((item for item in candidates if serpapi_product_price(item) is not None), {})
+		price = serpapi_product_price(candidate)
+		bulk = serpapi_bulk_price(candidate, price) if price is not None else None
+		title = candidate.get("title") or product_query(url)
+		currency = candidate.get("currency") or "USD"
+		debug_source = candidate
+	else:
+		detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else payload
+		price = unwrangle_product_price(detail)
+		if price is None:
+			price = unwrangle_product_price(payload)
+		if price is None:
+			price = unwrangle_product_price(detail.get("list_price"))
+		if price is None:
+			price = unwrangle_product_price(payload.get("list_price"))
+		bulk = unwrangle_bulk_price(detail, price) or unwrangle_bulk_price(payload, price)
+		title = detail.get("name") or detail.get("title") or product_query(url)
+		currency = detail.get("currency") or payload.get("currency") or "USD"
+		debug_source = payload
+	bulk_price, bulk_quantity = bulk if bulk else (None, None)
+	price_path, raw_price = _find_json_field(debug_source, ("price", "current_price", "sale_price", "final_price"))
+	if raw_price is None:
+		price_path, raw_price = _find_json_field(debug_source, ("list_price", "listing_price", "original_price"))
+	bulk_price_path, raw_bulk_price = _find_json_field(debug_source, ("bulk_price", "volume_price"))
+	quantity_path, raw_quantity = _find_json_field(debug_source, ("bulk_price_threshold", "bulk_price_quantity", "minimum_order_quantity", "quantity"))
+	return {
+		"product": {"title": title, "price": price, "currency": currency, "bulk_price": bulk_price, "bulk_quantity": bulk_quantity},
+		"fields": {
+			"title": {"path": _find_json_field(debug_source, ("name", "title"))[0], "value": title},
+			"price": {"path": price_path, "raw": raw_price, "parsed": price},
+			"currency": {"path": _find_json_field(debug_source, ("currency",))[0], "value": currency},
+			"bulk_price": {"path": bulk_price_path, "raw": raw_bulk_price, "parsed": bulk_price},
+			"bulk_quantity": {"path": quantity_path, "raw": raw_quantity, "parsed": bulk_quantity},
+		},
+		"error": "No regular price could be extracted from this response." if price is None else None,
+	}
+
+
 def init_db() -> None:
 	"""
-	Initialize the database by creating necessary tables if they do not exist.
+	## Initialize the database by creating necessary tables if they do not exist.
 	This function establishes a connection to the database using the connect() function.
 	It then executes SQL statements to create two tables:'products' and 'observations'.
 	'products' contain info such as: ID, URL, title, source, price, currency, check date, and error status.
@@ -157,7 +247,7 @@ def init_db() -> None:
 			);
 			CREATE TABLE IF NOT EXISTS observations (
 				id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL,
-				price REAL, currency TEXT, title TEXT, status TEXT NOT NULL,
+				price REAL, bulk_price REAL, currency TEXT, title TEXT, status TEXT NOT NULL,
 				error TEXT, observed_at TEXT NOT NULL,
 				FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
 			);
@@ -178,6 +268,9 @@ def init_db() -> None:
 			connection.execute("ALTER TABLE products ADD COLUMN bulk_price REAL")
 		if "bulk_quantity" not in product_columns:
 			connection.execute("ALTER TABLE products ADD COLUMN bulk_quantity INTEGER")
+		observation_columns = {row[1] for row in connection.execute("PRAGMA table_info(observations)")}
+		if "bulk_price" not in observation_columns:
+			connection.execute("ALTER TABLE observations ADD COLUMN bulk_price REAL")
 		table_definition = connection.execute(
 			"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'products'"
 		).fetchone()[0]
@@ -212,7 +305,7 @@ def local_calendar_date(timestamp: str):
 
 def normalize_url(value: str) -> str:
 	"""
-	Check and normilize the URl
+	## Check and normilize the URL
 	This function takes a string input and checks if it is a complete HTTP or HTTPS URL,
 	and returns a normalized version of the URL without any fragment identifiers.
 	"""
@@ -274,11 +367,12 @@ def api_provider() -> str:
 
 
 def fetch_product(url: str, store_id: str | None = None) -> dict[str, object]:
-	# SerpApi only covers Walmart and Home Depot; Unwrangle covers every supported retailer.
+	"""Fetch which store ID Api to call"""
 	host = urlparse(url).netloc.lower().removeprefix("www.")
 	provider = api_provider()
 	client = None
 	error = None
+	# SerpApi only covers Walmart and Home Depot; Unwrangle covers every supported retailer.
 	try:
 		if provider == "serpapi":
 			if "lowes" in host or "acehardware" in host or "samsclub" in host:
@@ -298,6 +392,10 @@ def fetch_product(url: str, store_id: str | None = None) -> dict[str, object]:
 		raise
 	finally:
 		if client is not None:
+			if isinstance(client, SerpApiClient):
+				mark_serpapi_usage_stale()
+			elif isinstance(client, UnwrangleClient):
+				update_unwrangle_usage(client.response_history)
 			record_dev_api_responses(url, client.__class__.__name__, getattr(client, "response_history", []), error)
 
 
@@ -324,6 +422,91 @@ def provider_ready(provider: str) -> bool:
 	return serpapi_ready() or unwrangle_ready()
 
 
+def normalize_usage_count(value: object) -> int | float | None:
+	"""	If the count is  an int, return as an int. else return the float count"""
+	if isinstance(value, bool) or value is None:
+		return None
+	try:
+		#convert to float
+		count = float(value)
+	except (TypeError, ValueError, OverflowError):
+		return None
+	#make sure the count is finite and not negative
+	if not math.isfinite(count) or count < 0:
+		return None
+	return int(count) if count.is_integer() else count
+
+
+def update_unwrangle_usage(responses: list[dict[str, object]]) -> None:
+	"""Check Unwrangle's responce for remaining credits, and update the amount remaining based on that number."""
+	for payload in reversed(responses):
+		if "remaining_credits" not in payload:
+			continue
+		remaining = normalize_usage_count(payload["remaining_credits"])
+		if remaining is not None:
+			with api_usage_lock:
+				starting_credits = api_usage["unwrangle_starting_credits"]
+				#If starting credits are less than the remaining credits, update the starting credits to the remaining amount.
+				#This is to keep things accurate. 
+				if starting_credits is None or remaining > starting_credits:
+					api_usage["unwrangle_starting_credits"] = remaining
+				api_usage["unwrangle_remaining"] = remaining
+			return
+
+
+def mark_serpapi_usage_stale() -> None:
+	global serpapi_usage_checked_at
+	with api_usage_lock:
+		serpapi_usage_checked_at = 0.0
+
+
+def invalidate_api_usage() -> None:
+	"""Return the API usage variables to none"""
+	global serpapi_usage_checked_at
+	with api_usage_lock:
+		serpapi_usage_checked_at = 0.0
+		api_usage["serpapi_remaining"] = None
+		api_usage["serpapi_monthly_limit"] = None
+		api_usage["serpapi_monthly_used"] = None
+		api_usage["unwrangle_remaining"] = None
+		api_usage["unwrangle_starting_credits"] = None
+
+
+def api_usage_summary() -> dict[str, int | float | None]:
+	global serpapi_usage_checked_at
+	if serpapi_ready() and not app.testing:
+		now = time.monotonic()
+		with api_usage_lock:
+			should_refresh = now - serpapi_usage_checked_at >= API_USAGE_CACHE_SECONDS
+			if should_refresh:
+				serpapi_usage_checked_at = now
+		if should_refresh:
+			try:
+				usage = SerpApiClient().account_usage()
+			except Exception:
+				pass
+			else:
+				with api_usage_lock:
+					api_usage["serpapi_remaining"] = usage["remaining"]
+					api_usage["serpapi_monthly_limit"] = usage["monthly_limit"]
+					api_usage["serpapi_monthly_used"] = usage["monthly_used"]
+	with api_usage_lock:
+		usage = dict(api_usage)
+	serpapi_limit = usage["serpapi_monthly_limit"]
+	serpapi_used = usage["serpapi_monthly_used"]
+	if isinstance(serpapi_limit, (int, float)) and serpapi_limit > 0 and isinstance(serpapi_used, (int, float)):
+		usage["serpapi_usage_percent"] = min(100.0, max(0.0, serpapi_used / serpapi_limit * 100))
+	else:
+		usage["serpapi_usage_percent"] = 0.0
+	starting_credits = usage["unwrangle_starting_credits"]
+	remaining_credits = usage["unwrangle_remaining"]
+	if isinstance(starting_credits, (int, float)) and starting_credits > 0 and isinstance(remaining_credits, (int, float)):
+		usage["unwrangle_usage_percent"] = min(100.0, max(0.0, (starting_credits - remaining_credits) / starting_credits * 100))
+	else:
+		usage["unwrangle_usage_percent"] = 0.0
+	return usage
+
+
 def read_env_file_text() -> str:
 	if not ENV_FILE.exists():
 		return "SERPAPI_API_KEY=\nUNWRANGLE_API_KEY=\n"
@@ -334,9 +517,11 @@ def save_env_file_text(content: str) -> None:
 	"""Check if .env content is valid, normilize, then save and load the key"""
 	if "\x00" in content:
 		raise ValueError("Invalid .env content.")
-	normalized = content if content.endswith("\n") else f"{content}\n"
+	#fixed `normilized` as it was causing blank lines.
+	normalized = content.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n") + "\n"
 	ENV_FILE.write_text(normalized, encoding="utf-8")
 	load_dotenv(ENV_FILE, override=True)
+	invalidate_api_usage()
 
 
 def update_env_setting(content: str, key: str, value: str) -> str:
@@ -354,22 +539,25 @@ def update_env_setting(content: str, key: str, value: str) -> str:
 	return content.rstrip("\n") + "\n" + setting + "\n"
 
 
-def format_observed_at_utc(timestamp: str) -> str:
-	return timestamp.replace("T", " ")[:16] + " UTC"
-
-
 def watchlist_export_rows() -> list[dict[str, object]]:
 	"""Read the sqlite3 file for information, then return a tuple with that data."""
 	with connect() as connection:
 		products = connection.execute("SELECT * FROM products ORDER BY id").fetchall()
 		rows = []
 		for product in products:
+			host = urlparse(product["url"]).netloc.lower().removeprefix("www.")
+			product_id = (
+				unwrangle_product_reference(product["url"]).product_id
+				if host.endswith(("walmart.com", "homedepot.com", "lowes.com", "acehardware.com", "samsclub.com"))
+				else None
+			)
 			history = connection.execute(
-				"SELECT price, currency, status, error, observed_at FROM observations WHERE product_id = ? ORDER BY observed_at",
+				"SELECT price, bulk_price, currency, status, error, observed_at FROM observations WHERE product_id = ? ORDER BY observed_at",
 				(product["id"],),
 			).fetchall()
 			rows.append({
 				"id": product["id"],
+				"product_id": product_id,
 				"url": product["url"],
 				"title": product["title"],
 				"source": product["source"],
@@ -385,124 +573,10 @@ def watchlist_export_rows() -> list[dict[str, object]]:
 	return rows
 
 
-def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | None:
-	"""
-	Generates a SVG line chart represienting the historical prices of products.
-	This function takes a list of SQLite Row objects containing observation data.
-	Filters out the rows where the price is 'None' and creates a list of points with their observed_at timestamp and corresponding price.
-	If there is no valid points, it returns None.
-	"""
-	#extract observed_at timestamps and prices from the list
-	points = [(row["observed_at"], float(row["price"])) for row in observations if row["price"] is not None]
-	if not points:
-		return None
-	
-	#define dimension of the chart
-	height = 180
-	left, right, top, bottom = 52, 12, 12, 18
-
-	#calculate the plot area within the chart dimensions
-	plot_width, plot_height = width - left - right, height - top - bottom
-
-	#Scaling
-	prices = [price for _, price in points]
-
-	# Choose a familiar currency interval that produces about four grid steps.
-	minimum, maximum = min(prices), max(prices)
-	target_interval = max((maximum - minimum) / 4, 0.5)
-	intervals = (0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000)
-	tick_interval = next((interval for interval in intervals if interval >= target_interval), None)
-
-	if tick_interval is None:
-		tick_interval = math.ceil(target_interval / 5000) * 5000
-	lower_bound = math.floor(minimum / tick_interval) * tick_interval
-	upper_bound = math.ceil(maximum / tick_interval) * tick_interval
-
-	if lower_bound == upper_bound:
-		lower_bound -= tick_interval
-		upper_bound += tick_interval
-	tick_count = math.ceil((upper_bound - lower_bound) / tick_interval)
-	upper_bound = lower_bound + tick_count * tick_interval
-	spread = upper_bound - lower_bound
-
-	#Calculate the coords for each pint on the chart
-	coordinates = []
-	for index, (observed_at, price) in enumerate(points):
-		x = left + (plot_width * index / max(len(points) - 1, 1))
-		y = top + plot_height - ((price - lower_bound) / spread * plot_height)
-		coordinates.append((x, y, observed_at, price))
-
-	#Generate the SVG polyline for the chart line
-	line = " ".join(f"{x:.1f},{y:.1f}" for x, y, _, _ in coordinates)
-
-	# Generate the SVG marks for each point
-	marks = []
-	for x, y, observed_at, price in coordinates:
-		date = format_observed_at_utc(observed_at)
-		marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" tabindex="0"><title>${price:,.2f} on {date}</title></circle>')
-
-	axis_y = top + plot_height
-	y_axis_ticks = []
-	for index in range(tick_count + 1):
-		price = lower_bound + index * tick_interval
-		y = axis_y - (index / tick_count * plot_height)
-		y_axis_ticks.append(
-			f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" stroke="#e2e4d9" stroke-width="1"/>'
-			f'<text x="{left - 6}" y="{y + 3:.1f}" fill="#6c756b" font-size="9" text-anchor="end">${price:,.2f}</text>'
-		)
-
-	date_indexes = sorted({0, len(coordinates) // 2, len(coordinates) - 1})
-	x_axis_labels = []
-	for index in date_indexes:
-		x, _, observed_at, _ = coordinates[index]
-		date = format_observed_at_utc(observed_at).split(" ")[0]
-		if index == 0:
-			anchor = "start"
-		elif index == len(coordinates) - 1:
-			anchor = "end"
-		else:
-			anchor = "middle"
-		x_axis_labels.append(
-			f'<text x="{x:.1f}" y="{height - 4}" fill="#6c756b" font-size="9" text-anchor="{anchor}">{date}</text>'
-		)
-
-	# Return the SVG markup for the price chart
-	return Markup(
-		f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Price history with {len(points)} observations">'
-		f'{"".join(y_axis_ticks)}<line x1="{left}" y1="{top}" x2="{left}" y2="{axis_y}" stroke="#9ca597" stroke-width="1"/>'
-		f'<line x1="{left}" y1="{axis_y}" x2="{width - right}" y2="{axis_y}" stroke="#9ca597" stroke-width="1"/>'
-		f'<polyline points="{line}" fill="none" stroke="var(--lg-main-line)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'
-		f'{"".join(marks)}{"".join(x_axis_labels)}</svg>'
-	)
-
-
-def chart_observations_in_range(observations: list[sqlite3.Row], start_date: date, end_date: date) -> list[sqlite3.Row]:
-	"""Keep observations inside a date range, then retain its largest price movements."""
-	if not observations:
-		return []
-	ranged = [
-		row for row in observations
-		if start_date <= datetime.fromisoformat(row["observed_at"]).date() <= end_date
-	]
-	if len(ranged) <= MAX_CHART_POINTS:
-		return ranged
-
-	# The endpoints establish the selected period; ranked movements reveal its meaningful changes.
-	movements = [
-		(abs(float(ranged[index]["price"]) - float(ranged[index - 1]["price"])), index)
-		for index in range(1, len(ranged) - 1)
-		if float(ranged[index]["price"]) != float(ranged[index - 1]["price"])
-	]
-	indexes = {0, len(ranged) - 1}
-	for _change, index in sorted(movements, reverse=True)[:MAX_CHART_POINTS - 2]:
-		indexes.add(index)
-	return [ranged[index] for index in sorted(indexes)]
-
-
 @app.before_request
 def protect_post_forms() -> None:
 	"""
-	Protects POST requests by checking for valid CSRF tokens
+	## Protects POST requests by checking for valid CSRF tokens
 	This function runs before each request and ensures that the form token is valid
 	It cancels any pending shutdown, checks if a CSRF token exists in the session, and aborts with a 400 error 
 	if the token is invalid or missing when processing POST requests to endpoints other than 'shutdown'.
@@ -548,7 +622,7 @@ def schedule_shutdown() -> None:
 
 def run_scan() -> None:
 	"""
-	Runs a full scan of all products in the database.
+	## Runs a full scan of all products in the database.
 	This function initiates a scan, updates product details based on their latest observations,
 	and records observations for each product. It handles retries and ensures that only one URL is fetched
 	per second to avoid overwhelming the server.
@@ -594,10 +668,11 @@ def refresh_product(product: sqlite3.Row) -> None:
 				(result.get("store_name"), result.get("store_location"), product["source"], product["store_id"], f"Store {product['store_id']}", "Location pending"),
 			)
 		connection.execute("UPDATE products SET title = COALESCE(?, title), price = ?, bulk_price = ?, bulk_quantity = ?, currency = ?, checked_at = ?, error = ? WHERE id = ?", (result.get("title"), result.get("price"), result.get("bulk_price"), result.get("bulk_quantity"), result.get("currency"), observed_at, error, product["id"]))
-		connection.execute("INSERT INTO observations (product_id, price, currency, title, status, error, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (product["id"], result.get("price"), result.get("currency"), result.get("title"), status, error, observed_at))
+		connection.execute("INSERT INTO observations (product_id, price, bulk_price, currency, title, status, error, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (product["id"], result.get("price"), result.get("bulk_price"), result.get("currency"), result.get("title"), status, error, observed_at))
 
 
 def scan_allowed() -> bool:
+	"""Check if the user is allowed to query the API's to check prices"""
 	if DEVELOPER_MODE:
 		return True
 	#Connect to the database using the connect function
@@ -611,6 +686,7 @@ def scan_allowed() -> bool:
 
 @app.route("/", methods=["GET"])
 def index():
+	"""Run the program in the user's prefered web browser"""
 	#Connect to the database using the connect function
 	with connect() as connection:
 		#Execute a SQL query to retrieve all products and order them by their ID
@@ -623,7 +699,7 @@ def index():
 		for product in product_rows:
 			#Execute a SQL query to retrieve the history of observations for the current product
 			history = connection.execute(
-				"SELECT price, observed_at FROM observations WHERE product_id = ? AND status = 'success' AND price IS NOT NULL ORDER BY observed_at",
+				"SELECT price, bulk_price, observed_at FROM observations WHERE product_id = ? AND status = 'success' AND price IS NOT NULL ORDER BY observed_at",
 				(product["id"],),
 			).fetchall()
 			product_view = dict(product)#create a dictionary for the product view and populate it with porduct details
@@ -675,7 +751,61 @@ def index():
 		env_file_text=read_env_file_text(), 
 		update_available=update_available, 
 		latest_version=latest_version, 
-		releases_url=check_for_update.get_latest_release_url()
+		releases_url=check_for_update.get_latest_release_url(),
+		api_usage=api_usage_summary(),
+	)
+
+
+@app.get("/dev/responses")
+def dev_responses():
+	if not DEVELOPER_MODE:
+		abort(404)
+	with connect_dev() as connection:
+		rows = connection.execute(
+			"SELECT id, observed_at, url, provider, response_json, error FROM api_responses ORDER BY id DESC LIMIT 100"
+		).fetchall()
+	records = [dict(row) for row in rows]
+	selected_id = request.args.get("response_id", type=int)
+	selected = next((item for item in records if item["id"] == selected_id), None)
+	pretty_response = None
+	if selected and selected["response_json"]:
+		try:
+			pretty_response = json.dumps(json.loads(selected["response_json"]), indent=2, ensure_ascii=False)
+		except json.JSONDecodeError:
+			pretty_response = selected["response_json"]
+	return render_template(
+		"dev_responses.html", records=records, selected=selected,
+		pretty_response=pretty_response, replay_result=None, csrf_token=session["csrf_token"],
+	)
+
+
+@app.post("/dev/responses/<int:response_id>/replay")
+def replay_dev_response_route(response_id: int):
+	if not DEVELOPER_MODE:
+		abort(404)
+	with connect_dev() as connection:
+		rows = connection.execute(
+			"SELECT id, observed_at, url, provider, response_json, error FROM api_responses ORDER BY id DESC LIMIT 100"
+		).fetchall()
+		record = connection.execute(
+			"SELECT id, observed_at, url, provider, response_json, error FROM api_responses WHERE id = ?",
+			(response_id,),
+		).fetchone()
+	if record is None:
+		abort(404)
+	selected = dict(record)
+	payload = None
+	try:
+		payload = json.loads(selected["response_json"] or "null")
+		if not isinstance(payload, dict):
+			raise ValueError("Saved response is empty or is not a JSON object.")
+		replay_result = replay_dev_response(selected["provider"], selected["url"], payload)
+	except (ValueError, TypeError) as error:
+		replay_result = {"error": str(error), "product": None, "fields": {}}
+	pretty_response = json.dumps(payload, indent=2, ensure_ascii=False) if isinstance(payload, dict) else selected["response_json"]
+	return render_template(
+		"dev_responses.html", records=[dict(row) for row in rows], selected=selected,
+		pretty_response=pretty_response, replay_result=replay_result, csrf_token=session["csrf_token"],
 	)
 
 
@@ -684,7 +814,7 @@ def chart_window(product_id: int):
 	"""Return a selected time range for an interactive history chart."""
 	with connect() as connection:
 		history = connection.execute(
-			"SELECT price, observed_at FROM observations WHERE product_id = ? AND status = 'success' AND price IS NOT NULL ORDER BY observed_at",
+			"SELECT price, bulk_price, observed_at FROM observations WHERE product_id = ? AND status = 'success' AND price IS NOT NULL ORDER BY observed_at",
 			(product_id,),
 		).fetchall()
 	if not history:
@@ -754,7 +884,9 @@ def add_store():
 	if not store_id.isdigit():
 		return redirect(url_for("index", message="Store ID must contain digits only."))
 	name = name or f"Store {store_id}"
+	# Show Location pending until the search. 
 	location = location or "Location pending"
+	# Then once the search is run, check the search responce for the store name.
 	with connect() as connection:
 		try:
 			connection.execute(
@@ -811,7 +943,7 @@ def export_watchlist_json():
 def export_watchlist_csv():
 	"""Export SQL database as a csv file"""
 	output = io.StringIO(newline="")
-	fieldnames = ["id", "url", "title", "source", "price", "currency", "checked_at", "error", "history"]
+	fieldnames = ["id", "product_id", "url", "title", "source", "price", "currency", "checked_at", "error", "history"]
 	writer = csv.DictWriter(output, fieldnames=fieldnames)
 	writer.writeheader()
 	for product in watchlist_export_rows():
@@ -882,7 +1014,7 @@ def build_watchlist_database(path: Path, products: list[dict[str, object]]) -> N
 			);
 			CREATE TABLE observations (
 				id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL,
-				price REAL, currency TEXT, title TEXT, status TEXT NOT NULL,
+				price REAL, bulk_price REAL, currency TEXT, title TEXT, status TEXT NOT NULL,
 				error TEXT, observed_at TEXT NOT NULL,
 				FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
 			);
@@ -917,8 +1049,8 @@ def build_watchlist_database(path: Path, products: list[dict[str, object]]) -> N
 				if not observation.get("observed_at"):
 					continue #observed_at is NOT NULL; skip malformed entries rather than fail the whole import
 				connection.execute(
-					"INSERT INTO observations (product_id, price, currency, status, error, observed_at) VALUES (?, ?, ?, ?, ?, ?)",
-					(product_id, observation.get("price"), observation.get("currency"),
+					"INSERT INTO observations (product_id, price, bulk_price, currency, status, error, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					(product_id, observation.get("price"), observation.get("bulk_price"), observation.get("currency"),
 						observation.get("status") or "ok", observation.get("error"), observation.get("observed_at")),
 				)
 			imported += 1

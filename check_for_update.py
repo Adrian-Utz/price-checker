@@ -36,7 +36,7 @@ def get_latest_release_url():
 
 
 def open_releases_page():
-    """Open the latest release page with a Windows fallback.
+    """## Open the latest release page with a Windows fallback.
 
     Returns True if opening appears successful, else False.
     """
@@ -60,7 +60,7 @@ def open_releases_page():
 
 def _parse_version(version_str):
     """
-    Normalize a version string to a tuple of ints for comparison.
+    ## Normalize a version string to a tuple of ints for comparison.
 
     Examples: 'v1.2.3' -> (1,2,3); '1.2' -> (1,2,0)
     Non-numeric suffixes are ignored.
@@ -88,7 +88,7 @@ def _parse_version(version_str):
 
 
 def _read_local_version():
-    """Read the local app version from the shared version module.
+    """## Read the local app version from the shared version module.
 
     Returns the raw string or None if not found.
     """
@@ -97,7 +97,7 @@ def _read_local_version():
 
 def get_latest_version():
     """
-    Fetch the latest version tag from GitHub releases or tags.
+    ## Fetch the latest version tag from GitHub releases or tags.
 
     Returns the version string (e.g., 'v1.2.3' or '1.2.3') or None on error.
     """

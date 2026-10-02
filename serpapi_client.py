@@ -18,7 +18,7 @@ Planned:
 Use SerpApi to fetch product information, and keep it in lists.
 The free version of SerpApi allows for 250 searches per month, you can comfortable search 57ish items per week, or 8 items a day.
 
-Last Update: 9/10/2026
+Last Update: 10/1/2026
 Written on: 7/27/2026
 Written by: AJ Utz
 """
@@ -259,7 +259,7 @@ def product_reference(url: str) -> ProductReference:
 class SerpApiClient:
     def __init__(self, api_key: str | None = None) -> None:
         """
-        Initialize the API key from environment variables or default.
+        ## Initialize the API key from environment variables or default.
         Set Timeout for requests.
         Check if the API key is configured.
         """
@@ -291,6 +291,30 @@ class SerpApiClient:
         if payload.get("error"):
             raise SerpApiError(f"SerpApi error: {payload['error']}")
         return payload
+
+    def account_usage(self) -> dict[str, int | None]:
+        """Return remaining searches and monthly usage for the account."""
+        endpoint = f"https://serpapi.com/account.json?api_key={quote_plus(self.api_key)}"
+        try:
+            with urlopen(endpoint, timeout=min(self.timeout_seconds, 5)) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as error:
+            raise SerpApiError(f"SerpApi account usage request failed: {error}") from error
+        if not isinstance(payload, dict) or payload.get("error"):
+            raise SerpApiError("SerpApi account usage is unavailable.")
+
+        def count(value: Any) -> int | None:
+            try:
+                result = int(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return result if result >= 0 else None
+
+        return {
+            "remaining": count(payload.get("total_searches_left", payload.get("plan_searches_left"))),
+            "monthly_limit": count(payload.get("searches_per_month")),
+            "monthly_used": count(payload.get("this_month_usage")),
+        }
 
     def product(self, url: str, store_id: str | None = None) -> dict[str, object]:
         reference = product_reference(url) #determine the retailer

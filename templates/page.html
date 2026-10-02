@@ -2,7 +2,7 @@
 <!--
 Beginning of the HTML main page for the program.
 
-Last Update: 9/25/2026
+Last Update: 10/1/2026
 Written on: 7/29/2026
 Written by: AJ Utz
 -->
@@ -36,7 +36,27 @@ Written by: AJ Utz
 				<button class="provider-button {{ 'active' if api_provider == 'serpapi' }}" name="provider" value="serpapi" title="Always use SerpApi">SerpApi</button>
 				<button class="provider-button {{ 'active' if api_provider == 'unwrangle' }}" name="provider" value="unwrangle" title="Always use Unwrangle">Unwrangle</button>
 			</form>
+			{% if developer_mode %}<a class="dev-tools-link" href="{{ url_for('dev_responses') }}">API response lab</a>{% endif %}
 		</div>
+			<div class="header-tools">
+				{% if serpapi_ready or unwrangle_ready %}
+				<div class="api-usage" aria-label="API usage">
+					{% if serpapi_ready %}
+					{% set serpapi_tip = 'SerpApi usage unavailable' %}
+					{% if api_usage.serpapi_remaining is not none %}{% set serpapi_tip = 'SerpApi: ' ~ api_usage.serpapi_remaining ~ ' searches left; ' ~ (api_usage.serpapi_monthly_used or 0) ~ ' of ' ~ (api_usage.serpapi_monthly_limit or 'unknown') ~ ' monthly searches used' %}{% endif %}
+					<div class="api-usage-item">
+						<meter class="api-usage-track serpapi-usage" min="0" max="100" optimum="100" value="{{ api_usage.serpapi_usage_percent }}" aria-label="SerpApi usage" aria-valuetext="{{ serpapi_tip }}" title="{{ serpapi_tip }}"></meter>
+					</div>
+					{% endif %}
+					{% if unwrangle_ready %}
+					{% set unwrangle_tip = 'Unwrangle usage unavailable until the first search' %}
+					{% if api_usage.unwrangle_remaining is not none %}{% set unwrangle_tip = 'Unwrangle: ' ~ api_usage.unwrangle_remaining ~ ' credits left; usage bar tracks credits spent since this run began' %}{% endif %}
+					<div class="api-usage-item">
+						<meter class="api-usage-track unwrangle-usage" min="0" max="100" optimum="100" value="{{ api_usage.unwrangle_usage_percent }}" aria-label="Unwrangle usage" aria-valuetext="{{ unwrangle_tip }}" title="{{ unwrangle_tip }}"></meter>
+					</div>
+					{% endif %}
+				</div>
+				{% endif %}
 			<div class="header-actions">
 				<label for="theme-select">Theme</label>
 					<select id="theme-select" class="theme-dropdown">
@@ -56,6 +76,7 @@ Written by: AJ Utz
 				<span class="status {{ '' if unwrangle_ready else 'warning' }}">
 					Unwrangle {{ 'ready' if unwrangle_ready else 'API key needed' }}
 				</span>
+			</div>
 			</div>
 	</header>
 		<dialog class="history-modal" id="env-editor">

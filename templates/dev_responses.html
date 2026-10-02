@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API Response Lab | Price Checker</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='stylesheet.css') }}">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">Developer tools</p>
+      <div class="title-line"><h1>API Response Lab</h1><a class="dev-tools-link" href="{{ url_for('index') }}">Back to watchlist</a></div>
+      <p class="lede">Saved provider responses, offline replay, and field extraction traces.</p>
+    </div>
+    <div class="header-actions">
+      <label for="theme-select">Theme</label>
+      <select id="theme-select" class="theme-dropdown">
+        <option value="default">Warm</option>
+        <option value="ocean">Ocean</option>
+        <option value="forest">Forest</option>
+        <option value="midnight">Midnight</option>
+        <option value="neon">Neon</option>
+        <option value="royal-purple">Royal Purple</option>
+      </select>
+    </div>
+  </header>
+  <main class="dev-response-layout">
+    <section class="dev-response-list">
+      <h2>Saved responses <span class="muted">({{ records|length }})</span></h2>
+      {% if records %}
+      <ol>
+        {% for record in records %}
+        <li class="dev-response-entry {{ 'selected' if selected and selected.id == record.id }}">
+          <a href="{{ url_for('dev_responses', response_id=record.id) }}">
+            <strong>#{{ record.id }} · {{ record.provider }}</strong>
+            <span title="{{ record.url }}">{{ record.url }}</span>
+            <small>{{ record.observed_at }}</small>
+          </a>
+          {% if record.error %}<p class="error">{{ record.error }}</p>{% endif %}
+        </li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="muted">No API responses have been recorded yet.</p>
+      {% endif %}
+    </section>
+    <section class="dev-response-detail">
+      {% if selected %}
+      <div class="dev-response-heading">
+        <div>
+          <p class="eyebrow">Response #{{ selected.id }} · {{ selected.provider }}</p>
+          <h2>{{ selected.url }}</h2>
+        </div>
+        {% if selected.response_json %}
+        <form method="post" action="{{ url_for('replay_dev_response_route', response_id=selected.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Replay saved JSON</button>
+        </form>
+        {% endif %}
+      </div>
+      {% if replay_result %}
+      <section class="dev-extraction">
+        <h3>Extraction debugger</h3>
+        {% if replay_result.error %}<p class="error">{{ replay_result.error }}</p>{% endif %}
+        {% if replay_result.product %}
+        <dl class="dev-extraction-grid">
+          {% for name, field in replay_result.fields.items() %}
+          <div>
+            <dt>{{ name|replace('_', ' ')|title }}</dt>
+            <dd><code>{{ field.path or 'not found' }}</code></dd>
+            {% if field.raw is defined %}<dd class="dev-raw-value">Raw: <code>{{ field.raw|tojson }}</code></dd>{% endif %}
+            <dd>Extracted: <code>{{ field.parsed if field.parsed is defined else field.value }}</code></dd>
+          </div>
+          {% endfor %}
+        </dl>
+        <h4>Normalized product</h4>
+        <pre><code>{{ replay_result.product|tojson(indent=2) }}</code></pre>
+        {% endif %}
+      </section>
+      {% endif %}
+      <h3>Raw JSON response</h3>
+      {% if pretty_response %}<pre class="dev-json"><code>{{ pretty_response }}</code></pre>
+      {% else %}<p class="muted">No response body was saved for this request.</p>{% endif %}
+      {% else %}
+      <h2>Select a saved API response</h2>
+      <p class="muted">Choose a response to inspect its raw JSON, then replay it without making another API request.</p>
+      {% endif %}
+    </section>
+  </main>
+</body>
+<script>
+	//Local server shutdown request when user closes page
+    window.addEventListener("pagehide", function (event) {
+        if (!event.persisted) {
+            navigator.sendBeacon("{{ url_for('shutdown') }}");
+        }
+    });
+</script>
+<script>
+  const themeSelect = document.getElementById("theme-select");
+  const savedTheme = localStorage.getItem("price-checker-theme") || "default";
+
+  document.documentElement.dataset.theme = savedTheme;
+  themeSelect.value = savedTheme;
+
+  themeSelect.addEventListener("change", function () {
+    document.documentElement.dataset.theme = this.value;
+    localStorage.setItem("price-checker-theme", this.value);
+  });
+</script>
+</html>

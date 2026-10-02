@@ -1,11 +1,11 @@
 # Price Checker
 
-A local web app for maintaining a product watchlist and checking prices once per day. It uses SerpApi Walmart and Home Depot product lookups, SQLite history, conservative request pacing, and cached results.
+A local web app for maintaining a product watchlist and checking prices once per day. It uses SerpApi's and Unwrangle's product lookups, SQLite history, conservative request pacing, and cached results.
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 9/23/2026  
-**Latest Version:** 0.0.3
+**Last Update on:** 10/1/2026  
+**Latest Version:** 0.0.5
 
 ## Main Capabilities
 1. Allow the user to input up to 20-100 URLs. (Customizable)
@@ -34,7 +34,7 @@ python -m venv .venv
 ```
 3. Install dependancies: 
 ```cmd
-python -m pip install -r requiements.txt
+python -m pip install -r requirements.txt
 ```
 4. Run the file: 
 ```cmd
@@ -55,7 +55,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 ```terminal
-python -m pip install -r requiements.txt
+python -m pip install -r requirements.txt
 ```
 ```terminal
 python main.py
@@ -73,6 +73,7 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 4. The app automatically opens `http://127.0.0.1:5000` in your default browser.
+
 
 The database is created as `price_checker.sqlite3` beside `main.py`. Set `PRICE_CHECKER_DB` to choose another location. Optional settings are `PRICE_CHECKER_MAX_URLS` (20-100), `PRICE_CHECKER_CACHE_HOURS`, `PRICE_CHECKER_MIN_DELAY`, `PRICE_CHECKER_LOCATION` (a ZIP code or city/state used for regional retailer results), and `PORT`. The daily scan limit resets at midnight according to the computer's local timezone; observation timestamps remain stored in UTC.
 
@@ -111,9 +112,30 @@ Keep the `.env` file private do not share your personal API key. If you think yo
 
 ## Uploading your database  
 The price checker accepts user made databases from the following filetypes: .json, .csv, .sqlite3, .sqlite, and .db.  
-**CSV upload**: The imported file requires a `url` and `history` column. If either is missing, it should reject the file.  
+**CSV upload**: The imported file requires at least a `url` column. If `url` is missing, it should reject the file.  
 **JSON upload**: The JSON must be an object with a top-level `"products"` list. Each product row should still include a `url` value, because the app skips rows without one during import.  
 **SQLite upload**: The file must be a valid SQLite database and contain a `products` table. There is no stricter per-column requirement check for the database upload itself.  
+
+## Files
+
+```
+price checker
+├── static
+│	├── stylesheet.css		- Style for the HTML.
+├── templates
+│	├── page.html 			- Main HTML page for the checker.
+│	├── dev_responses.html	- Dev Sheet to check errors and raw JSON responces.
+├── changelog.md 			- A list of changes to the program.
+├── charting,py				- Contains functions for chart creation.
+├── check_for_update.py		- Checks the repo for the latest version. 
+├── LICENSE					- Standard MIT license.
+├── main.py					- Entrance file for the program.
+├── README.md				- This file.
+├── requirements.txt		- A list of requirments to run the price-checker.
+├── serpapi_client.py		- Sends a request to a SerpApi API.
+├── unwrangle_slien.py		- Sends a request to a Unwrangle API.
+├── version.py				- Contains the Version Number.
+```
 
 ## Responsible use
 
@@ -123,24 +145,18 @@ Price extraction through SerpApi uses structured product fields. Walmart and Hom
 
 ## Features/Bugfixes
 
-### Upcoming
+### Upcoming / Noted
 
-- Saving the env file on the front end adds too many new lines. 
 - Mapping 2 datasheets together.
-- Bulk purchasing line in graph history.
 - Persistance to all store numbers. 
 - Combine similar items onto a single line graph, then export as an image.
 - Search bar function to quickly show the requested item. (Instead of scrolling the entire database.)
 - Integrate SerpApi's and Unwrangle's Amazon API into the program
 - SerpApi has a bunch of other API's that don't fit with the current project. Perhaps we can make an offshoot of this program. (Social Media anylitics)
 - Change the time zone from UTC to the machine's time zone
-- Usage bar in the top right to tell the user how many more searches/credits they have left
 - Discontinued: Checks if the page or product is discontined, then alerts user.
 - Local Database compare: If you have your own database of products, you can see which items you and walmart, lowes, home-depot share. Easy table export function for comparision. (If you don't map the items by something they share, you won't get any hits. E.G. UPC, Name, Product ID or SKU)
 - Dev mode tools:
-	- Raw API response viewer
-	- Price extraction debugger
-	- Replay saved API responses
 	- Price sanity checks
 	- Provider comparison
 	- API request log
@@ -149,12 +165,20 @@ Price extraction through SerpApi uses structured product fields. Walmart and Hom
 	- API health dashboard
 	- Dry-run mode
 
-### Implemented
+### Implemented / Fixed
 
+- Dev mode tools:
+	- Raw API response viewer
+	- Price extraction debugger
+	- Replay saved API responses
+- Usage bar in the top right to tell the user how many more searches/credits they have left
+- Bulk purchasing line in graph history.
+- Saving the env file on the front end adds too many new lines. 
 - Add time interval customization for the bar graph.(User controlled)
 - Export line graph as image
 - Graph view: Shows a line graph of the product over time.
 - Watchlist export: Download current products and saved observations as JSON or CSV.
+- JSON and CSV exports include the retailer product ID when it can be extracted from a supported product URL.
 - Local Flask interface for adding and removing URLs.
 - SQLite-backed current prices, scan observations, errors, and daily scan state.
 - SerpApi product lookups with configurable timeouts.
@@ -164,9 +188,9 @@ Price extraction through SerpApi uses structured product fields. Walmart and Hom
 - Different themes for your enjoyment.
 - Unwrangle API integration with more retailers.
 - Ability to toggle between auto, SerpApi, and Unwrangle.
-- Line Graph
 - JSON and CSV data export
 - Store specific search. Works with SerpApi, and a few of Unwrangle's API's
 - .env file editor from front end
 - Unwrangle API integration (Walmart, Home Depot, Lowes, Ace Hardware, Sams Club)
 - Import/export the raw SQLite database file to switch between watchlists
+- On Python 3.15 and newer, selected imports are loaded only when first used. Older Python versions ignore this setting and import them normally.
