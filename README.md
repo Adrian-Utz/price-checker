@@ -4,7 +4,7 @@ A local web app for maintaining a product watchlist and checking prices once per
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 10/5/2026  
+**Last Update on:** 10/2/2026  
 **Latest Version:** 0.0.5
 
 ## Main Capabilities
