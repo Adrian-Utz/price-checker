@@ -10,6 +10,7 @@ Written by: AJ Utz
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Price Checker</title>
+	<script>document.documentElement.dataset.theme = localStorage.getItem("price-checker-theme") || "default";</script>
 	<link rel="stylesheet" href="{{ url_for('static', filename='stylesheet.css') }}">
 </head>
 <body>
@@ -317,8 +318,18 @@ Written by: AJ Utz
 	themeSelect.value = savedTheme;
 
 	themeSelect.addEventListener("change", function () {
-		document.documentElement.dataset.theme = this.value;
-		localStorage.setItem("price-checker-theme", this.value);
+		const root = document.documentElement;
+		const value = this.value;
+		const applyTheme = () => { root.dataset.theme = value; };
+		localStorage.setItem("price-checker-theme", value);
+		if (document.startViewTransition && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+			document.startViewTransition(applyTheme);
+			return;
+		}
+		root.classList.add("theme-transition");
+		clearTimeout(window.themeTransitionTimer);
+		window.themeTransitionTimer = setTimeout(() => root.classList.remove("theme-transition"), 1100);
+		applyTheme();
 	});
 </script>
 <script>

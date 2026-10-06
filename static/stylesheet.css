@@ -5,7 +5,7 @@
     font-family: Georgia, serif;
     font-weight: 700;
 
-    --page-background: #f1e5c4;
+    --page-background: linear-gradient(90deg, #c5a859 0%, #d4bb7f 50%, #e2cfa4 100%);
     --surface: #dacead;
     --text: #202820;
     --muted-text: #596257;
@@ -26,11 +26,11 @@
 }
 
 [data-theme="ocean"] {
-    --page-background: #aae1f7;
+    --page-background: linear-gradient(90deg, #abf7e7 0%, #abeef7 50%, #abd5f7 100%);
     --surface: #7bbcd3;
-    --text: #17323a;
-    --muted-text: #547078;
-    --subtle-text: #71878d;
+    --text: #0c1a1f;
+    --muted-text: #212b2e;
+    --subtle-text: #212b2e;
     --border: #c4d8dc;
     --accent: #087e8b;
     --accent-dark: #075e68;
@@ -47,7 +47,7 @@
 }
 
 [data-theme="midnight"] {
-    --page-background: #20252a;
+    --page-background: linear-gradient(90deg, #20252a 0%, #4d5155 50%, #52565c 100%);
     --surface: #2b3238;
     --text: #f1f4ed;
     --muted-text: #779c83;
@@ -68,7 +68,7 @@
 }
 
 [data-theme="forest"] {
-    --page-background: #203625;
+    --page-background: linear-gradient(90deg, #29462f 0%, #243a28 50%, #1e2e21 100%);
     --surface: #23442a;
     --text: #f1f4ed;
     --muted-text: #96a099;
@@ -108,9 +108,9 @@
     --lg-main-line: #029b16;
     --lg-bulk-line: #015a0d;
 }
-
+/*#6e408f #906aa8 #b195c2*/
 [data-theme="royal-purple"] {
-    --page-background: #6e408f;
+    --page-background: linear-gradient(90deg, #6e408f 0%, #906aa8 50%, #b195c2 100%);
     --surface: #4e2f63;
     --text: #ecd8f0;
     --muted-text: #cdb6d1;
@@ -130,10 +130,51 @@
     --lg-bulk-line: #54326d;
 }
 
+@keyframes page-fade-in {
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
+}
+
 body {
+    animation: page-fade-in 1s cubic-bezier(0.42, 0.00, 0.26, 1.00) both;
     margin: 0 auto;
     max-width: 1500px;
     padding: 32px 20px 64px;
+}
+
+::view-transition-group(root) {
+    animation-duration: 1s;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.theme-transition,
+.theme-transition *,
+.theme-transition *::before,
+.theme-transition *::after {
+    transition: background-color 1s cubic-bezier(0.22, 1, 0.36, 1),
+        color 1s cubic-bezier(0.22, 1, 0.36, 1),
+        border-color 1s cubic-bezier(0.22, 1, 0.36, 1),
+        box-shadow 1s cubic-bezier(0.22, 1, 0.36, 1),
+        fill 1s cubic-bezier(0.22, 1, 0.36, 1),
+        stroke 1s cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    body {
+        animation: none;
+    }
+
+    .theme-transition,
+    .theme-transition *,
+    .theme-transition *::before,
+    .theme-transition *::after {
+        transition: none !important;
+    }
 }
 
 header {
@@ -294,7 +335,7 @@ h1 {
 .provider-button {
     background: var(--surface);
     border: 1px solid var(--border);
-    color: var(--button-text-color);
+    color: var(--text);
     padding: 7px 10px;
 }
 

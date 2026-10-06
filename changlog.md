@@ -18,3 +18,6 @@
 
 # [v0.0.5](https://github.com/Adrian-Utz/price-checker/releases/tag/0.0.5)
 - Moved some of the chart creation logic into it's own file to help with redability. Fixed a Windows specific issue where textarea submissions use [CRLF](https://developer.mozilla.org/en-US/docs/Glossary/CRLF) line endings, and writing them unchanged caused `write_text()` to add another carriage return. This created blank lines between `.env` entries on each save. Added usage bars for both API providers. Added more to the dev mode. Browse the latest 100 saved API responses and inspect their raw JSON. Replay a saved responce offline, without another API request. See the extracted product fields, raw values, parsed values, and JSON paths such as `$.detail.price`. all of this can be accessed. Added `__lazy_modules__` for imports used only after app initialization. Python 3.15+ can defer them until first use, while older version continue loading them normally.
+
+# [v0.0.6](https://github.com/Adrian-Utz/price-checker/releases/tag/0.0.6)
+- Added a page fade-in to the `stylesheet.css`. Theme switches on the HTML pages now use `document.startViewTransition`. A crossfade between two stapshots, one of the old page into one of the new. Fade is disabled for reduced motion users. Browsers without view transitions fall back to a per-element fade.

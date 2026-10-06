@@ -43,7 +43,7 @@ python main.py
 
 ## Run on Linux
 
-1. Open terminal:
+1. Open terminal and install the basic python files and pip installer:
 ```terminal
 sudo apt update
 sudo apt install python3 python3-venv python3-pip git
