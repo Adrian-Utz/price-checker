@@ -8,6 +8,17 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
+"""
+Apify API Currently Implemented:
+- Lowes
+Planned:
+
+
+Last Update: 10/9/2026
+Written on: 10/9/2026
+Written by: AJ Utz
+"""
+
 LOWES_ACTOR = "maplerope44~lowes-product-lookup"
 ZIP_PATTERN = re.compile(r"\d{5}")
 
@@ -51,6 +62,7 @@ class ApifyClient:
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
             method="POST",
         )
+        #Error Net
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -73,19 +85,27 @@ class ApifyClient:
     def product(self, url: str, store_id: str | None = None, zip_state: str | None = None) -> dict[str, object]:
         product_id = lowes_product_id(url)
         zip_code = (zip_state or "").strip()
+
         if not ZIP_PATTERN.fullmatch(zip_code):
             zip_code = os.environ.get("APIFY_LOWES_ZIP", "").strip()
+
         if not ZIP_PATTERN.fullmatch(zip_code):
             raise ApifyError("Apify's Lowes lookup needs a 5-digit ZIP code. Set APIFY_LOWES_ZIP or save the store with a ZIP.")
+        
         payload = self.run_actor(LOWES_ACTOR, {"zip": zip_code, "productId": product_id})
         status = payload.get("status")
+
         if status in (202, 206):
             raise ApifyError("Apify's lookup is still processing; try again shortly.")
+        
         if isinstance(status, int) and status >= 400:
             raise ApifyError(f"Apify's Lowes lookup returned status {status}.")
+        
         stores = payload.get("stores")
+
         if not isinstance(stores, dict) or not stores:
             raise ApifyError("Apify returned no stores for this product.")
+        
         if store_id:
             store = stores.get(str(store_id))
             if not isinstance(store, dict):
@@ -93,18 +113,22 @@ class ApifyClient:
         else:
             candidates = [value for value in stores.values() if isinstance(value, dict)]
             store = min(candidates, key=lambda item: item.get("distance") if isinstance(item.get("distance"), (int, float)) else float("inf"))
+
         products = store.get("products")
         item = products.get(product_id) if isinstance(products, dict) else None
+
         if not isinstance(item, dict) and isinstance(products, dict) and products:
             item = next(iter(products.values()))
         if not isinstance(item, dict):
             raise ApifyError("Apify returned the store but no product data.")
+        
         regular = cents_to_dollars(item.get("priceCentsPerUnit"))
         sale = cents_to_dollars(item.get("salePriceCentsPerUnit"))
         price = min(value for value in (regular, sale) if value is not None) if (regular or sale) else None
         bulk_price = cents_to_dollars(item.get("bulkPriceCentsPerUnit"))
         bulk_quantity = item.get("bulkQuantityRequired")
         has_bulk = bulk_price is not None and isinstance(bulk_quantity, int) and bulk_quantity > 1
+
         # Lowes hides the real price (and stock) when blocking; the actor then returns the bulk price in the regular price field.
         if item.get("quantityAvailable") == 0 and sale is None and not has_bulk and regular is not None:
             return {

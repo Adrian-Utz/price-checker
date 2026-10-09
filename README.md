@@ -4,7 +4,7 @@ A local flask app for maintaining a product watchlist and checking prices once p
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 10/8/2026  
+**Last Update on:** 10/9/2026  
 **Latest Version:** 0.0.7
 
 ## Main Capabilities
