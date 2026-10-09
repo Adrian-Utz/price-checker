@@ -154,7 +154,11 @@ price checker
 ```
 
 ## GitDiagram
-[![Architecture diagram of adrian-utz/price-checker](https://gitdiagram.com/adrian-utz/price-checker/diagram.png)](https://gitdiagram.com/adrian-utz/price-checker?utm_source=readme&utm_medium=picture)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="resources/dark_diagram.png">
+  <source media="(prefers-color-scheme: light)" srcset="resources/light_diagram.png">
+  <img alt="Architecture diagram of adrian-utz/price-checker" src="resources/light_diagram.png">
+</picture>
 
 ## Responsible use
 
