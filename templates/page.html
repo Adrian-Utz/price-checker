@@ -2,7 +2,7 @@
 <!--
 Beginning of the HTML main page for the program.
 
-Last Update: 10/1/2026
+Last Update: 10/7/2026
 Written on: 7/29/2026
 Written by: AJ Utz
 -->
@@ -36,6 +36,7 @@ Written by: AJ Utz
 				<button class="provider-button {{ 'active' if api_provider == 'auto' }}" name="provider" value="auto" title="Pick the best provider per retailer">Auto</button>
 				<button class="provider-button {{ 'active' if api_provider == 'serpapi' }}" name="provider" value="serpapi" title="Always use SerpApi">SerpApi</button>
 				<button class="provider-button {{ 'active' if api_provider == 'unwrangle' }}" name="provider" value="unwrangle" title="Always use Unwrangle">Unwrangle</button>
+				<button class="provider-button {{ 'active' if api_provider == 'apify' }}" name="provider" value="apify" title="Always use Apify (Lowes only)">Apify</button>
 			</form>
 			{% if developer_mode %}<a class="dev-tools-link" href="{{ url_for('dev_responses') }}">API response lab</a>{% endif %}
 		</div>
@@ -67,6 +68,7 @@ Written by: AJ Utz
 						<option value="midnight">Midnight</option>
 						<option value="neon">Neon</option>
 						<option value="royal-purple">Royal Purple</option>
+						<option value="sun">Sun</option>
 					</select>
 				<!--Env editor button-->
 				<button class="env-button" type="button" onclick="document.getElementById('env-editor').showModal()">Edit .env</button>
@@ -76,6 +78,9 @@ Written by: AJ Utz
 				</span>
 				<span class="status {{ '' if unwrangle_ready else 'warning' }}">
 					Unwrangle {{ 'ready' if unwrangle_ready else 'API key needed' }}
+				</span>
+				<span class="status {{ '' if apify_ready else 'warning' }}">
+					Apify {{ 'ready' if apify_ready else 'API token needed' }}
 				</span>
 			</div>
 			</div>
@@ -102,7 +107,7 @@ Written by: AJ Utz
 				</form>
 			</div>
 		</dialog>
-  <div class="notice">Use responsibly. Notice! Your search may not always succeed! Retailer pages can change, impose rate limits, or prohibit access to their webpages that can disrupt the API's workflow. This tool spaces requests, and uses a daily scan limit. Check your current plan limits for SerpApi and Unwrangle.</div>
+  <div class="notice">Use responsibly. Notice! Your search may not always succeed! Retailer pages can change, impose rate limits, or prohibit access to their webpages that can disrupt the API's workflow. This tool spaces requests, and uses a daily scan limit. Check your current plan limits for SerpApi, Apify,and Unwrangle.</div>
   {% if message %}<p class="notice">{{ message }}</p>{% endif %}
 	{% if not serpapi_ready %}<p class="notice"><strong>One setup step:</strong> set <code>SERPAPI_API_KEY</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
 	{% if not unwrangle_ready %}<p class="notice"><strong>One setup step:</strong> set <code>UNWRANGLE_API_KEY</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
@@ -222,6 +227,11 @@ Written by: AJ Utz
 									<p class="eyebrow">Add saved store</p>
 									<label for="store-number-{{ product.id }}">Store number</label>
 									<input id="store-number-{{ product.id }}" name="store_id" inputmode="numeric" pattern="[0-9]*" placeholder="4638" required>
+									{% if product.source == 'Lowes' %}
+									<label for="store-zip-state-{{ product.id }}">ZIP code or state</label>
+									<input id="store-zip-state-{{ product.id }}" name="zip_state" placeholder="90210 or CA" required>
+									<p class="help">Required with a Lowes store number. To update an existing store, enter its store number and new ZIP/state.</p>
+									{% endif %}
 									<p class="help">The store name and location will be filled in from the retailer response after the next successful check.</p>
 									<div class="modal-actions"><button type="submit">Add store</button></div>
 								</form>
@@ -232,6 +242,9 @@ Written by: AJ Utz
 						{% if product.price is not none %}
 						<div>${{ '%.2f'|format(product.price) }}</div>
 						{% if product.bulk_price is not none and product.bulk_quantity is not none %}<div class="bulk-price">${{ '%.2f'|format(product.bulk_price) }} when you buy {{ product.bulk_quantity }}+</div>{% endif %}
+						{% elif product.bulk_price is not none %}
+						<div>Single-unit price hidden</div>
+						<div class="bulk-price">${{ '%.2f'|format(product.bulk_price) }}{% if product.bulk_quantity is not none %} when you buy {{ product.bulk_quantity }}+{% else %} bulk price{% endif %}</div>
 						{% else %}Waiting for check{% endif %}
 					</td>
 					<td class="muted">{{ product.checked_at or 'Not checked yet' }}</td>

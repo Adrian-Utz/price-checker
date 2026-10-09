@@ -1,16 +1,17 @@
 # Price Checker
 
-A local web app for maintaining a product watchlist and checking prices once per day. It uses SerpApi's and Unwrangle's product lookups, SQLite history, conservative request pacing, and cached results.
+A local flask app for maintaining a product watchlist and checking prices once per day. It uses SerpApi's, Unwrangle's, and Apify's product lookups, SQLite history, conservative request pacing, and cached results.
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 10/6/2026  
-**Latest Version:** 0.0.5
+**Last Update on:** 10/8/2026  
+**Latest Version:** 0.0.7
 
 ## Main Capabilities
 1. Allow the user to input up to 20-100 URLs. (Customizable)
 2. Look up Walmart and Home Depot products through SerpApi engines. 
-3. Look up Walmart, Home Depot, Lowes, Ace Hardware, and Sam's Club items with Unwrangle's engines. 
+3. Look up Walmart, Home Depot, Lowes, Ace Hardware, and Sam's Club items with Unwrangle's engines. Lowes store-specific lookups require a ZIP code or state alongside the store number.
+3a. Look up Lowes items through Apify's Lowes Product Lookup actor (by product ID and ZIP code).
 4. Keep current results and historical observations in SQLite.
 5. Restrict the user to one completed scan per local calendar day, resetting at local midnight.
 6. Space requests with a minimum delay and randomized jitter.
@@ -30,7 +31,7 @@ python -m venv .venv
 ```
 2. Then: 
 ```cmd
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 ```
 3. Install dependancies: 
 ```cmd
@@ -92,6 +93,7 @@ Create a SerpApi account and set your API key in environment variables. Or, for 
 ```dotenv
 SERPAPI_API_KEY=your-key-here
 UNWRANGLE_API_KEY=your-key-here
+APIFY_API_TOKEN=your-token-here
 PRICE_CHECKER_DEVELOPER_MODE='0'
 PRICE_CHECKER_API_PROVIDER=serpapi-or-unwrangle
 ```
@@ -103,9 +105,22 @@ Create a Unwrangle account and set your API key in evironment variables. Or, for
 ```dotenv
 SERPAPI_API_KEY=your-key-here
 UNWRANGLE_API_KEY=your-key-here
+APIFY_API_TOKEN=your-token-here
 PRICE_CHECKER_DEVELOPER_MODE='0'
-PRICE_CHECKER_API_PROVIDER=serpapi-or-unwrangle
+PRICE_CHECKER_API_PROVIDER=serpapi-or-unwrangle-or-apify
 ```
+
+#### Apify
+**Pay per product (about $5 per 1,000 lookups; free accounts are limited)**  
+Currently supports Lowes through the [Lowes Product Lookup](https://apify.com/maplerope44/lowes-product-lookup) actor. Create an Apify account, copy your API token from the Apify Console (Settings > API & Integrations), and add it to your `.env`:
+
+```dotenv
+APIFY_API_TOKEN=your-token-here
+APIFY_LOWES_ZIP=22902
+APIFY_TIMEOUT_SECONDS=180
+```
+
+The actor looks products up by product ID (taken from the Lowes URL) and a 5-digit ZIP code. The ZIP comes from the saved store's ZIP, or `APIFY_LOWES_ZIP` if none is saved. If a store ID is saved it uses that store, otherwise the nearest store. `APIFY_TIMEOUT_SECONDS` is optional (120-300). When Lowes hides the single-unit price, the returned price is shown as a bulk price. In `Auto` mode, Lowes uses Apify when a token is set and falls back to Unwrangle otherwise.
 
 **Notice**  
 Keep the `.env` file private do not share your personal API key. If you think your key has been leaked, quickly go to your dashboard and change it.
@@ -125,8 +140,9 @@ price checker
 ├── templates
 │	├── page.html 			- Main HTML page for the checker.
 │	├── dev_responses.html	- Dev Sheet to check errors and raw JSON responces.
+├── apify_api_client.py		- Sends a request to the Apify Lowes Product Lookup actor.
 ├── changelog.md 			- A list of changes to the program.
-├── charting,py				- Contains functions for chart creation.
+├── charting.py				- Contains functions for chart creation.
 ├── check_for_update.py		- Checks the repo for the latest version. 
 ├── LICENSE					- Standard MIT license.
 ├── main.py					- Entrance file for the program.
@@ -137,11 +153,12 @@ price checker
 ├── version.py				- Contains the Version Number.
 ```
 
+## GitDiagram
+[![Architecture diagram of adrian-utz/price-checker](https://gitdiagram.com/adrian-utz/price-checker/diagram.png)](https://gitdiagram.com/adrian-utz/price-checker?utm_source=readme&utm_medium=picture)
+
 ## Responsible use
 
 Only check pages where automated access is permitted by the site's terms and applicable policies. Retailers can change their markup, rate-limit clients, or block automated traffic. Keep the list small, leave the delay enabled, and do not attempt to bypass CAPTCHAs, authentication, robots restrictions, or IP blocks. A browser context does not guarantee that a site will permit automation.
-
-Price extraction through SerpApi uses structured product fields. Walmart and Home Depot are supported; Lowe's and generic sites are not supported by the current providers. Unwrangle does provide more retailer options, but they don't provide a free version.
 
 ## Features/Bugfixes
 
@@ -154,12 +171,8 @@ Price extraction through SerpApi uses structured product fields. Walmart and Hom
 - Integrate SerpApi's and Unwrangle's Amazon API into the program
 - SerpApi has a bunch of other API's that don't fit with the current project. Perhaps we can make an offshoot of this program. (Social Media anylitics)
 - Change the time zone from UTC to the machine's time zone
-- Discontinued: Checks if the page or product is discontined, then alerts user.
 - Local Database compare: If you have your own database of products, you can see which items you and walmart, lowes, home-depot share. Easy table export function for comparision. (If you don't map the items by something they share, you won't get any hits. E.G. UPC, Name, Product ID or SKU)
 - Dev mode tools:
-	- Price sanity checks
-	- Provider comparison
-	- API request log
 	- Fixture generator
 	- Parser validation panel
 	- API health dashboard
@@ -171,6 +184,7 @@ Price extraction through SerpApi uses structured product fields. Walmart and Hom
 	- Raw API response viewer
 	- Price extraction debugger
 	- Replay saved API responses
+	- API request log
 - Usage bar in the top right to tell the user how many more searches/credits they have left
 - Bulk purchasing line in graph history.
 - Saving the env file on the front end adds too many new lines. 
@@ -187,10 +201,11 @@ Price extraction through SerpApi uses structured product fields. Walmart and Hom
 - Search the same item through multiple stores.
 - Different themes for your enjoyment.
 - Unwrangle API integration with more retailers.
-- Ability to toggle between auto, SerpApi, and Unwrangle.
+- Ability to toggle between auto, SerpApi, Unwrangle, and Apify.
 - JSON and CSV data export
 - Store specific search. Works with SerpApi, and a few of Unwrangle's API's
 - .env file editor from front end
 - Unwrangle API integration (Walmart, Home Depot, Lowes, Ace Hardware, Sams Club)
 - Import/export the raw SQLite database file to switch between watchlists
 - On Python 3.15 and newer, selected imports are loaded only when first used. Older Python versions ignore this setting and import them normally.
+- Apify API integration (Lowes), including bulk price display and `bulk_price`/`bulk_quantity` CSV export columns.

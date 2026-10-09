@@ -43,6 +43,7 @@ from urllib.parse import unquote, urlparse
 from flask import Flask, Response, abort, redirect, render_template, request, send_file, session, url_for
 from serpapi_client import SerpApiClient, product_bulk_price as serpapi_bulk_price, product_candidates, product_price as serpapi_product_price
 from unwrangle_client import UnwrangleClient, product_bulk_price as unwrangle_bulk_price, product_price as unwrangle_product_price, product_reference as unwrangle_product_reference
+from apify_api_client import ApifyClient
 from charting import chart_observations_in_range, format_observed_at_utc, price_chart
 from version import VERSION_NUMBER
 import check_for_update
@@ -52,7 +53,7 @@ from werkzeug.serving import make_server
 Main entry point into the program. This is a web application with a python backend. Used to keep track of certian items that the user selects.
 Made with Flask.
 
-Last Update: 10/2/2026
+Last Update: 10/7/2026
 Written on: 7/27/2026
 Written by: AJ Utz
 """
@@ -103,8 +104,8 @@ def check_for_update_background() -> None:
 def connect():
 	"""
 	## Open a SQLite connection
-	Allow commits (or roll backs) on exit like a plain sqlite3. Connection would,
-	but also close the connection - sqlite3.Connection's own context manager never closes the file,
+	Allow commits (or roll backs) on exit like a plain sqlite3 Connection would,
+	but also close the connection - sqlite3 Connection's own context manager never closes the file,
 	which left stale open handles on DATABASE_PATH and blocked database import/replace on Windows.
 	"""
 	connection = sqlite3.connect(DATABASE_PATH)
@@ -257,7 +258,7 @@ def init_db() -> None:
 			);
 			CREATE TABLE IF NOT EXISTS stores (
 				id INTEGER PRIMARY KEY, retailer TEXT NOT NULL, store_id TEXT NOT NULL,
-				name TEXT NOT NULL, location TEXT NOT NULL,
+				name TEXT NOT NULL, location TEXT NOT NULL, zip_state TEXT,
 				UNIQUE(retailer, store_id)
 			);
 		""")
@@ -271,6 +272,9 @@ def init_db() -> None:
 		observation_columns = {row[1] for row in connection.execute("PRAGMA table_info(observations)")}
 		if "bulk_price" not in observation_columns:
 			connection.execute("ALTER TABLE observations ADD COLUMN bulk_price REAL")
+		store_columns = {row[1] for row in connection.execute("PRAGMA table_info(stores)")}
+		if "zip_state" not in store_columns:
+			connection.execute("ALTER TABLE stores ADD COLUMN zip_state TEXT")
 		table_definition = connection.execute(
 			"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'products'"
 		).fetchone()[0]
@@ -359,14 +363,18 @@ def product_query(url: str) -> str:
 	return re.sub(r"\s+", " ", name).strip()
 
 """Allow the user to select which API to use."""
-API_PROVIDERS = ("auto", "serpapi", "unwrangle")
+API_PROVIDERS = ("auto", "serpapi", "unwrangle", "apify")
 
 def api_provider() -> str:
 	value = os.environ.get("PRICE_CHECKER_API_PROVIDER", "auto").strip().lower()
 	return value if value in API_PROVIDERS else "auto"
 
 
-def fetch_product(url: str, store_id: str | None = None) -> dict[str, object]:
+def fetch_product(
+	url: str,
+	store_id: str | None = None,
+	zip_state: str | None = None,
+) -> dict[str, object]:
 	"""Fetch which store ID Api to call"""
 	host = urlparse(url).netloc.lower().removeprefix("www.")
 	provider = api_provider()
@@ -379,12 +387,20 @@ def fetch_product(url: str, store_id: str | None = None) -> dict[str, object]:
 				raise RuntimeError("SerpApi does not support this retailer. Switch the API provider to Unwrangle or Auto.")
 			client = SerpApiClient()
 			return client.product(url, store_id=store_id)
+		if provider == "apify":
+			if "lowes" not in host:
+				raise RuntimeError("Apify currently only supports Lowes. Switch the API provider to Unwrangle, SerpApi, or Auto.")
+			client = ApifyClient()
+			return client.product(url, store_id=store_id, zip_state=zip_state)
 		if provider == "unwrangle":
 			client = UnwrangleClient()
-			return client.product(url, store_id=store_id)
+			return client.product(url, store_id=store_id, zip_state=zip_state)
+		if "lowes" in host and apify_ready():
+			client = ApifyClient()
+			return client.product(url, store_id=store_id, zip_state=zip_state)
 		if "lowes" in host or "acehardware" in host or "samsclub" in host:
 			client = UnwrangleClient()
-			return client.product(url, store_id=store_id)
+			return client.product(url, store_id=store_id, zip_state=zip_state)
 		client = SerpApiClient()
 		return client.product(url, store_id=store_id)
 	except Exception as fetch_error:
@@ -414,12 +430,18 @@ def unwrangle_ready() -> bool:
 	return bool(os.environ.get("UNWRANGLE_API_KEY"))
 
 
+def apify_ready() -> bool:
+	return bool(os.environ.get("APIFY_API_TOKEN"))
+
+
 def provider_ready(provider: str) -> bool:
 	if provider == "serpapi":
 		return serpapi_ready()
 	if provider == "unwrangle":
 		return unwrangle_ready()
-	return serpapi_ready() or unwrangle_ready()
+	if provider == "apify":
+		return apify_ready()
+	return serpapi_ready() or unwrangle_ready() or apify_ready()
 
 
 def normalize_usage_count(value: object) -> int | float | None:
@@ -509,7 +531,7 @@ def api_usage_summary() -> dict[str, int | float | None]:
 
 def read_env_file_text() -> str:
 	if not ENV_FILE.exists():
-		return "SERPAPI_API_KEY=\nUNWRANGLE_API_KEY=\n"
+		return "SERPAPI_API_KEY=\nUNWRANGLE_API_KEY=\nAPIFY_API_TOKEN=\n"
 	return ENV_FILE.read_text(encoding="utf-8")
 
 
@@ -655,7 +677,15 @@ def refresh_product(product: sqlite3.Row) -> None:
 
 	#Try to fetch the product details from the URl
 	try:
-		result = fetch_product(product["url"], store_id=product["store_id"])
+		zip_state = None
+		if product["source"] == "Lowes" and product["store_id"]:
+			with connect() as connection:
+				store = connection.execute(
+					"SELECT zip_state FROM stores WHERE retailer = ? AND store_id = ?",
+					(product["source"], product["store_id"]),
+				).fetchone()
+			zip_state = store["zip_state"] if store else None
+		result = fetch_product(product["url"], store_id=product["store_id"], zip_state=zip_state)
 		status, error = "success", None
 	except Exception as fetch_error:  # A single URL must not cancel the scan.
 		result, status, error = {}, "error", str(fetch_error)
@@ -744,6 +774,7 @@ def index():
 		csrf_token=session["csrf_token"], 
 		serpapi_ready=serpapi_ready(), 
 		unwrangle_ready=unwrangle_ready(), 
+		apify_ready=apify_ready(),
 		api_provider=api_provider(), 
 		provider_is_ready=provider_ready(api_provider()), 
 		developer_mode=DEVELOPER_MODE, 
@@ -879,10 +910,13 @@ def add_store():
 	store_id = request.form.get("store_id", "").strip()
 	name = request.form.get("name", "").strip()
 	location = request.form.get("location", "").strip()
+	zip_state = request.form.get("zip_state", "").strip().upper()
 	if retailer not in {"Walmart", "Home Depot", "Lowes", "Ace Hardware"}:
 		return redirect(url_for("index", message="Choose a supported retailer."))
 	if not store_id.isdigit():
 		return redirect(url_for("index", message="Store ID must contain digits only."))
+	if retailer == "Lowes" and not zip_state:
+		return redirect(url_for("index", message="A ZIP code or state is required for Lowes stores."))
 	name = name or f"Store {store_id}"
 	# Show Location pending until the search. 
 	location = location or "Location pending"
@@ -890,10 +924,16 @@ def add_store():
 	with connect() as connection:
 		try:
 			connection.execute(
-				"INSERT INTO stores (retailer, store_id, name, location) VALUES (?, ?, ?, ?)",
-				(retailer, store_id, name, location),
+				"INSERT INTO stores (retailer, store_id, name, location, zip_state) VALUES (?, ?, ?, ?, ?)",
+				(retailer, store_id, name, location, zip_state or None),
 			)
 		except sqlite3.IntegrityError:
+			if retailer == "Lowes" and zip_state:
+				connection.execute(
+					"UPDATE stores SET zip_state = ? WHERE retailer = ? AND store_id = ?",
+					(zip_state, retailer, store_id),
+				)
+				return redirect(url_for("index", message="Lowes store ZIP/state updated."))
 			return redirect(url_for("index", message="That store is already saved for this retailer."))
 	return redirect(url_for("index", message="Store saved."))
 
@@ -943,7 +983,7 @@ def export_watchlist_json():
 def export_watchlist_csv():
 	"""Export SQL database as a csv file"""
 	output = io.StringIO(newline="")
-	fieldnames = ["id", "product_id", "url", "title", "source", "price", "currency", "checked_at", "error", "history"]
+	fieldnames = ["id", "product_id", "url", "title", "source", "price", "bulk_price", "bulk_quantity", "currency", "checked_at", "error", "history"]
 	writer = csv.DictWriter(output, fieldnames=fieldnames)
 	writer.writeheader()
 	for product in watchlist_export_rows():
@@ -1024,7 +1064,7 @@ def build_watchlist_database(path: Path, products: list[dict[str, object]]) -> N
 			);
 			CREATE TABLE stores (
 				id INTEGER PRIMARY KEY, retailer TEXT NOT NULL, store_id TEXT NOT NULL,
-				name TEXT NOT NULL, location TEXT NOT NULL,
+				name TEXT NOT NULL, location TEXT NOT NULL, zip_state TEXT,
 				UNIQUE(retailer, store_id)
 			);
 		""")
@@ -1037,7 +1077,7 @@ def build_watchlist_database(path: Path, products: list[dict[str, object]]) -> N
 			cursor = connection.execute(
 				"INSERT INTO products (url, title, source, store_id, price, bulk_price, bulk_quantity, currency, checked_at, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				(url, product.get("title"), source, product.get("store_id"), product.get("price"),
-					product.get("bulk_price"), product.get("bulk_quantity"), product.get("currency"), product.get("checked_at"), product.get("error")),
+					product.get("bulk_price") or None, product.get("bulk_quantity") or None, product.get("currency"), product.get("checked_at"), product.get("error")),
 			)
 			product_id = cursor.lastrowid
 			history = product.get("history")
