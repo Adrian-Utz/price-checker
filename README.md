@@ -10,9 +10,9 @@ A local flask app for maintaining a product watchlist and checking prices once p
 ## Main Capabilities
 1. Allow the user to input up to 20-100 URLs. (Customizable)
 2. API Lookup  
-2a. Look up Walmart and Home Depot products through SerpApi engines.  
-2b. Look up Walmart, Home Depot, Lowes, Ace Hardware, and Sam's Club items with Unwrangle's engines. Lowes store-specific lookups require the store number, ZIP code, and state together.  
-2c. Look up Lowes items through Apify's Lowes Product Lookup actor (by product ID and ZIP code).
+	2a. Look up Walmart and Home Depot products through SerpApi engines.  
+	2b. Look up Walmart, Home Depot, Lowes, Ace Hardware, and Sam's Club items with Unwrangle's engines. Lowes store-specific lookups require the store number, ZIP code, and state together.  
+	2c. Look up Lowes items through Apify's Lowes Product Lookup actor (by product ID and ZIP code).
 4. Keep current results and historical observations in SQLite.
 5. Restrict the user to one completed scan per local calendar day, resetting at local midnight.
 6. Space requests with a minimum delay and randomized jitter.

@@ -44,13 +44,13 @@ from dotenv import load_dotenv
 from urllib.parse import unquote, urlparse
 
 from flask import Flask, Response, abort, redirect, render_template, request, send_file, session, url_for
-from serpapi_client import SerpApiClient, product_bulk_price as serpapi_bulk_price, product_candidates, product_price as serpapi_product_price
-from unwrangle_client import product_bulk_price as unwrangle_bulk_price, product_price as unwrangle_product_price
-from charting import chart_observations_in_range, format_observed_at_utc, price_chart
+from api_clients.serpapi_client import SerpApiClient, product_bulk_price as serpapi_bulk_price, product_candidates, product_price as serpapi_product_price
+from api_clients.unwrangle_client import product_bulk_price as unwrangle_bulk_price, product_price as unwrangle_product_price
+from utils.charting import chart_observations_in_range, format_observed_at_utc, price_chart
 from version import VERSION_NUMBER
-import check_for_update
+import utils.check_for_update as check_for_update
 from werkzeug.serving import make_server
-from watchlist_io import (
+from utils.watchlist_io import (
 	build_watchlist_database,
 	parse_watchlist_csv,
 	parse_watchlist_json,
@@ -58,7 +58,7 @@ from watchlist_io import (
 	validate_watchlist_database,
 	watchlist_export_rows,
 )
-from database import (
+from utils.database import (
 	DATABASE_PATH,
 	DEV_DATABASE_PATH,
 	connect,
@@ -66,12 +66,12 @@ from database import (
 	init_db,
 	init_dev_db,
 )
-from scanner import (
+from utils.scanner import (
 	refresh_product as _refresh_product,
 	run_scan as _run_scan,
 	scan_allowed as _scan_allowed,
 )
-from providers import (
+from utils.providers import (
 	API_PROVIDERS,
 	apify_ready,
 	api_provider,

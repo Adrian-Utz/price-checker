@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import urlparse
 
-from unwrangle_client import product_reference as unwrangle_product_reference
+from api_clients.unwrangle_client import product_reference as unwrangle_product_reference
 
 """
 Helper methods for watchlist importing and exporting. 

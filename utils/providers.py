@@ -2,9 +2,9 @@ import os
 from collections.abc import Callable
 from urllib.parse import urlparse
 
-from apify_api_client import ApifyClient
-from serpapi_client import SerpApiClient
-from unwrangle_client import UnwrangleClient
+from api_clients.apify_api_client import ApifyClient
+from api_clients.serpapi_client import SerpApiClient
+from api_clients.unwrangle_client import UnwrangleClient
 
 """
 Holds the provider selection and API-specific behavior.
