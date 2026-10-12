@@ -2,7 +2,7 @@
 <!--
 Beginning of the HTML main page for the program.
 
-Last Update: 10/7/2026
+Last Update: 10/9/2026
 Written on: 7/29/2026
 Written by: AJ Utz
 -->
@@ -173,9 +173,15 @@ Written by: AJ Utz
 		<!--Starting section of your watchlist-->
 		<h2>Your watchlist <span class="muted">({{ products|length }})</span></h2>
 		{% if products %}
+		<form id="recheck-selected-form" method="post" action="{{ url_for('recheck_selected') }}">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			<button id="recheck-selected-button" type="submit" disabled>Re-check selected</button>
+			<span id="selected-count" class="muted">No items selected</span>
+		</form>
 		<table>
 			<thead>
 				<tr>
+					<th><input type="checkbox" id="select-all-products" aria-label="Select all items"></th>
 					<th>Product</th>
 					<th>Retailer</th>
 					<th>Price</th>
@@ -187,6 +193,7 @@ Written by: AJ Utz
 				<!--As long as there is a product in the table show it on the watchlist.-->
 				{% for product in products %}
 				<tr>
+					<td><input type="checkbox" class="select-product" name="product_ids" value="{{ product.id }}" form="recheck-selected-form" aria-label="Select {{ product.title or product.url }}"></td>
 					<td>
 						<a class="product-link" href="{{ product.url }}" rel="noreferrer">{{ product.title or 'Product waiting for first check' }}</a>
 						<span class="product-url muted">{{ product.url }}</span>
@@ -221,6 +228,22 @@ Written by: AJ Utz
 									<div class="modal-actions"><button type="submit">Save store</button></div>
 								</form>
 								<hr>
+								{% set saved_stores = stores_by_retailer.get(product.source, []) %}
+								{% if saved_stores %}
+								<div class="saved-stores">
+									<p class="eyebrow">Manage saved stores</p>
+									{% for store in saved_stores %}
+									<div class="saved-store-row">
+										<span>{{ store.name }} · {{ store.location }} · Store {{ store.store_id }}</span>
+										<form method="post" action="{{ url_for('remove_store', store_record_id=store.id) }}" onsubmit="return confirm('Remove this saved store? Products assigned to it will switch to All stores.');">
+											<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+											<button class="remove" type="submit" aria-label="Remove saved store {{ store.store_id }}">Remove</button>
+										</form>
+									</div>
+									{% endfor %}
+								</div>
+								<hr>
+								{% endif %}
 								<form method="post" action="{{ url_for('add_store') }}">
 									<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 									<input type="hidden" name="retailer" value="{{ product.source }}">
@@ -228,9 +251,11 @@ Written by: AJ Utz
 									<label for="store-number-{{ product.id }}">Store number</label>
 									<input id="store-number-{{ product.id }}" name="store_id" inputmode="numeric" pattern="[0-9]*" placeholder="4638" required>
 									{% if product.source == 'Lowes' %}
-									<label for="store-zip-state-{{ product.id }}">ZIP code or state</label>
-									<input id="store-zip-state-{{ product.id }}" name="zip_state" placeholder="90210 or CA" required>
-									<p class="help">Required with a Lowes store number. To update an existing store, enter its store number and new ZIP/state.</p>
+									<label for="store-zipcode-{{ product.id }}">ZIP code</label>
+									<input id="store-zipcode-{{ product.id }}" name="zipcode" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" placeholder="90210" required>
+									<label for="store-zip-state-{{ product.id }}">State</label>
+									<input id="store-zip-state-{{ product.id }}" name="zip_state" pattern="[A-Za-z]{2}" maxlength="2" placeholder="CA" required>
+									<p class="help">Lowes requires the store number, ZIP code, and state together. To update an existing store, enter its store number with the new ZIP code and state.</p>
 									{% endif %}
 									<p class="help">The store name and location will be filled in from the retailer response after the next successful check.</p>
 									<div class="modal-actions"><button type="submit">Add store</button></div>
@@ -344,6 +369,29 @@ Written by: AJ Utz
 		window.themeTransitionTimer = setTimeout(() => root.classList.remove("theme-transition"), 1100);
 		applyTheme();
 	});
+</script>
+<script>
+	//Multi-select re-check controls
+	(function () {
+		const boxes = Array.from(document.querySelectorAll(".select-product"));
+		const selectAll = document.getElementById("select-all-products");
+		const button = document.getElementById("recheck-selected-button");
+		const count = document.getElementById("selected-count");
+		if (!selectAll || !button) { return; }
+		function update() {
+			const selected = boxes.filter(function (box) { return box.checked; }).length;
+			button.disabled = selected === 0;
+			count.textContent = selected ? selected + " selected" : "No items selected";
+			selectAll.checked = selected === boxes.length;
+			selectAll.indeterminate = selected > 0 && selected < boxes.length;
+		}
+		selectAll.addEventListener("change", function () {
+			boxes.forEach(function (box) { box.checked = selectAll.checked; });
+			update();
+		});
+		boxes.forEach(function (box) { box.addEventListener("change", update); });
+		update();
+	})();
 </script>
 <script>
 	//Line Chart exporting

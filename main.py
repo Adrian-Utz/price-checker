@@ -15,7 +15,11 @@ __lazy_modules__ = {
 	"urllib.parse",
 	"serpapi_client",
 	"unwrangle_client",
+	"apify_api_client",
+	"providers",
 	"charting",
+	"watchlist_io",
+	"scanner",
 	"version",
 	"check_for_update",
 	"werkzeug.serving",
@@ -23,7 +27,6 @@ __lazy_modules__ = {
 
 import json
 import csv
-import contextlib
 import io
 import math
 import os
@@ -42,18 +45,47 @@ from urllib.parse import unquote, urlparse
 
 from flask import Flask, Response, abort, redirect, render_template, request, send_file, session, url_for
 from serpapi_client import SerpApiClient, product_bulk_price as serpapi_bulk_price, product_candidates, product_price as serpapi_product_price
-from unwrangle_client import UnwrangleClient, product_bulk_price as unwrangle_bulk_price, product_price as unwrangle_product_price, product_reference as unwrangle_product_reference
-from apify_api_client import ApifyClient
+from unwrangle_client import product_bulk_price as unwrangle_bulk_price, product_price as unwrangle_product_price
 from charting import chart_observations_in_range, format_observed_at_utc, price_chart
 from version import VERSION_NUMBER
 import check_for_update
 from werkzeug.serving import make_server
+from watchlist_io import (
+	build_watchlist_database,
+	parse_watchlist_csv,
+	parse_watchlist_json,
+	source_for,
+	validate_watchlist_database,
+	watchlist_export_rows,
+)
+from database import (
+	DATABASE_PATH,
+	DEV_DATABASE_PATH,
+	connect,
+	connect_dev,
+	init_db,
+	init_dev_db,
+)
+from scanner import (
+	refresh_product as _refresh_product,
+	run_scan as _run_scan,
+	scan_allowed as _scan_allowed,
+)
+from providers import (
+	API_PROVIDERS,
+	apify_ready,
+	api_provider,
+	fetch_product as _fetch_product,
+	provider_ready,
+	serpapi_ready,
+	unwrangle_ready,
+)
 
 """
 Main entry point into the program. This is a web application with a python backend. Used to keep track of certian items that the user selects.
 Made with Flask.
 
-Last Update: 10/7/2026
+Last Update: 10/12/2026
 Written on: 7/27/2026
 Written by: AJ Utz
 """
@@ -61,9 +93,7 @@ Written by: AJ Utz
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE, override=True)
-DATABASE_PATH = Path(os.environ.get("PRICE_CHECKER_DB", ROOT / "price_checker.sqlite3"))
 DEVELOPER_MODE = os.environ.get("PRICE_CHECKER_DEVELOPER_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
-DEV_DATABASE_PATH = Path(os.environ.get("PRICE_CHECKER_DEV_DB", ROOT / "price_checker.dev.sqlite3"))
 MAX_URLS = max(20, min(int(os.environ.get("PRICE_CHECKER_MAX_URLS", "100")), 100)) #Change this variable if you want to track more items.
 CACHE_HOURS = max(1, int(os.environ.get("PRICE_CHECKER_CACHE_HOURS", "24")))
 MIN_DELAY_SECONDS = max(1.0, float(os.environ.get("PRICE_CHECKER_MIN_DELAY", "4")))
@@ -98,59 +128,6 @@ def check_for_update_background() -> None:
 	with update_info_lock:
 		update_info["available"] = available
 		update_info["latest_version"] = latest
-
-
-@contextlib.contextmanager
-def connect():
-	"""
-	## Open a SQLite connection
-	Allow commits (or roll backs) on exit like a plain sqlite3 Connection would,
-	but also close the connection - sqlite3 Connection's own context manager never closes the file,
-	which left stale open handles on DATABASE_PATH and blocked database import/replace on Windows.
-	"""
-	connection = sqlite3.connect(DATABASE_PATH)
-	connection.row_factory = sqlite3.Row
-	connection.execute("PRAGMA foreign_keys = ON")
-	try:
-		#Yield the connection to the caller
-		yield connection
-		#Commit chagees to the database
-		connection.commit()
-	except Exception:
-		connection.rollback() #In case of exception, rollback
-		raise
-	finally:
-		connection.close()
-
-
-@contextlib.contextmanager
-def connect_dev():
-	"""Provides a context manager for connecting to a SQLite database in dev mode"""
-	connection = sqlite3.connect(DEV_DATABASE_PATH)
-	connection.row_factory = sqlite3.Row
-	try:
-		#Yield the connection to the caller
-		yield connection
-		#Commit chagees to the database
-		connection.commit()
-	except Exception:
-		connection.rollback() #In case of exception, rollback
-		raise
-	finally:
-		connection.close()
-
-
-def init_dev_db() -> None:
-	"""Initialize the dev database with a table named api_responses"""
-	with connect_dev() as connection:
-		#The table will store info about API responces (timestamps, URLs, providers, JSON data)
-		connection.execute("""
-			CREATE TABLE IF NOT EXISTS api_responses (
-				id INTEGER PRIMARY KEY, observed_at TEXT NOT NULL,
-				url TEXT NOT NULL, provider TEXT NOT NULL,
-				response_json TEXT, error TEXT
-			)
-		""")
 
 
 def record_dev_api_responses(url: str, provider: str, responses: list[dict[str, object]], error: str | None = None) -> None:
@@ -229,74 +206,6 @@ def replay_dev_response(provider: str, url: str, payload: dict[str, object]) -> 
 	}
 
 
-def init_db() -> None:
-	"""
-	## Initialize the database by creating necessary tables if they do not exist.
-	This function establishes a connection to the database using the connect() function.
-	It then executes SQL statements to create two tables:'products' and 'observations'.
-	'products' contain info such as: ID, URL, title, source, price, currency, check date, and error status.
-	'observations' records the observations of prices, curencies, titles, statuses, errors, observed dates, and references to products.
-	"""
-	with connect() as connection:
-		connection.execute("PRAGMA foreign_keys = OFF")
-		connection.executescript("""
-			CREATE TABLE IF NOT EXISTS products (
-				id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT,
-				source TEXT NOT NULL, store_id TEXT, price REAL, bulk_price REAL,
-				bulk_quantity INTEGER, currency TEXT, checked_at TEXT,
-				error TEXT
-			);
-			CREATE TABLE IF NOT EXISTS observations (
-				id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL,
-				price REAL, bulk_price REAL, currency TEXT, title TEXT, status TEXT NOT NULL,
-				error TEXT, observed_at TEXT NOT NULL,
-				FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
-			);
-			CREATE TABLE IF NOT EXISTS scans (
-				id INTEGER PRIMARY KEY, started_at TEXT NOT NULL,
-				completed_at TEXT, status TEXT NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS stores (
-				id INTEGER PRIMARY KEY, retailer TEXT NOT NULL, store_id TEXT NOT NULL,
-				name TEXT NOT NULL, location TEXT NOT NULL, zip_state TEXT,
-				UNIQUE(retailer, store_id)
-			);
-		""")
-		product_columns = {row[1] for row in connection.execute("PRAGMA table_info(products)")}
-		if "store_id" not in product_columns:
-			connection.execute("ALTER TABLE products ADD COLUMN store_id TEXT")
-		if "bulk_price" not in product_columns:
-			connection.execute("ALTER TABLE products ADD COLUMN bulk_price REAL")
-		if "bulk_quantity" not in product_columns:
-			connection.execute("ALTER TABLE products ADD COLUMN bulk_quantity INTEGER")
-		observation_columns = {row[1] for row in connection.execute("PRAGMA table_info(observations)")}
-		if "bulk_price" not in observation_columns:
-			connection.execute("ALTER TABLE observations ADD COLUMN bulk_price REAL")
-		store_columns = {row[1] for row in connection.execute("PRAGMA table_info(stores)")}
-		if "zip_state" not in store_columns:
-			connection.execute("ALTER TABLE stores ADD COLUMN zip_state TEXT")
-		table_definition = connection.execute(
-			"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'products'"
-		).fetchone()[0]
-		if "url TEXT NOT NULL UNIQUE" in table_definition:
-			connection.execute("ALTER TABLE products RENAME TO products_old")
-			connection.execute("""
-				CREATE TABLE products (
-					id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT,
-					source TEXT NOT NULL, store_id TEXT, price REAL, bulk_price REAL,
-					bulk_quantity INTEGER, currency TEXT, checked_at TEXT,
-					error TEXT
-				)
-			""")
-			connection.execute("""
-				INSERT INTO products (id, url, title, source, store_id, price, currency, checked_at, error)
-				SELECT id, url, title, source, store_id, price, currency, checked_at, error
-				FROM products_old
-			""")
-			connection.execute("DROP TABLE products_old")
-		connection.execute("PRAGMA foreign_keys = ON")
-
-
 def utc_now() -> datetime:
 	"""Time check"""
 	return datetime.now(timezone.utc)
@@ -317,21 +226,6 @@ def normalize_url(value: str) -> str:
 	if parsed.scheme not in {"http", "https"} or not parsed.netloc:
 		raise ValueError("Enter a complete http or https URL.")
 	return parsed._replace(fragment="").geturl()
-
-
-def source_for(url: str) -> str:
-	host = urlparse(url).netloc.lower().removeprefix("www.")
-	if "homedepot" in host:
-		return "Home Depot"
-	if "walmart" in host:
-		return "Walmart"
-	if "lowes" in host:
-		return "Lowes"
-	if "acehardware" in host:
-		return "Ace Hardware"
-	if "samsclub" in host:
-		return "Sams Club"
-	return host
 
 
 def parse_price(text: str) -> float | None:
@@ -362,57 +256,22 @@ def product_query(url: str) -> str:
 	#remove any extra whitespace, strip leading/trailing spaces from name
 	return re.sub(r"\s+", " ", name).strip()
 
-"""Allow the user to select which API to use."""
-API_PROVIDERS = ("auto", "serpapi", "unwrangle", "apify")
-
-def api_provider() -> str:
-	value = os.environ.get("PRICE_CHECKER_API_PROVIDER", "auto").strip().lower()
-	return value if value in API_PROVIDERS else "auto"
-
 
 def fetch_product(
 	url: str,
 	store_id: str | None = None,
 	zip_state: str | None = None,
+	zipcode: str | None = None,
 ) -> dict[str, object]:
-	"""Fetch which store ID Api to call"""
-	host = urlparse(url).netloc.lower().removeprefix("www.")
-	provider = api_provider()
-	client = None
-	error = None
-	# SerpApi only covers Walmart and Home Depot; Unwrangle covers every supported retailer.
-	try:
-		if provider == "serpapi":
-			if "lowes" in host or "acehardware" in host or "samsclub" in host:
-				raise RuntimeError("SerpApi does not support this retailer. Switch the API provider to Unwrangle or Auto.")
-			client = SerpApiClient()
-			return client.product(url, store_id=store_id)
-		if provider == "apify":
-			if "lowes" not in host:
-				raise RuntimeError("Apify currently only supports Lowes. Switch the API provider to Unwrangle, SerpApi, or Auto.")
-			client = ApifyClient()
-			return client.product(url, store_id=store_id, zip_state=zip_state)
-		if provider == "unwrangle":
-			client = UnwrangleClient()
-			return client.product(url, store_id=store_id, zip_state=zip_state)
-		if "lowes" in host and apify_ready():
-			client = ApifyClient()
-			return client.product(url, store_id=store_id, zip_state=zip_state)
-		if "lowes" in host or "acehardware" in host or "samsclub" in host:
-			client = UnwrangleClient()
-			return client.product(url, store_id=store_id, zip_state=zip_state)
-		client = SerpApiClient()
-		return client.product(url, store_id=store_id)
-	except Exception as fetch_error:
-		error = str(fetch_error)
-		raise
-	finally:
-		if client is not None:
-			if isinstance(client, SerpApiClient):
-				mark_serpapi_usage_stale()
-			elif isinstance(client, UnwrangleClient):
-				update_unwrangle_usage(client.response_history)
-			record_dev_api_responses(url, client.__class__.__name__, getattr(client, "response_history", []), error)
+	return _fetch_product(
+		url,
+		store_id=store_id,
+		zip_state=zip_state,
+		zipcode=zipcode,
+		mark_serpapi_usage_stale=mark_serpapi_usage_stale,
+		update_unwrangle_usage=update_unwrangle_usage,
+		record_dev_api_responses=record_dev_api_responses,
+	)
 
 
 def cache_is_fresh(checked_at: str | None) -> bool:
@@ -420,28 +279,6 @@ def cache_is_fresh(checked_at: str | None) -> bool:
 	if not checked_at:
 		return False
 	return datetime.fromisoformat(checked_at) > utc_now() - timedelta(hours=CACHE_HOURS)
-
-#Is SerpApi ready? API key is found.
-def serpapi_ready() -> bool:
-	return bool(os.environ.get("SERPAPI_API_KEY"))
-
-#Is Unwrangle ready? API key is found.
-def unwrangle_ready() -> bool:
-	return bool(os.environ.get("UNWRANGLE_API_KEY"))
-
-
-def apify_ready() -> bool:
-	return bool(os.environ.get("APIFY_API_TOKEN"))
-
-
-def provider_ready(provider: str) -> bool:
-	if provider == "serpapi":
-		return serpapi_ready()
-	if provider == "unwrangle":
-		return unwrangle_ready()
-	if provider == "apify":
-		return apify_ready()
-	return serpapi_ready() or unwrangle_ready() or apify_ready()
 
 
 def normalize_usage_count(value: object) -> int | float | None:
@@ -561,40 +398,6 @@ def update_env_setting(content: str, key: str, value: str) -> str:
 	return content.rstrip("\n") + "\n" + setting + "\n"
 
 
-def watchlist_export_rows() -> list[dict[str, object]]:
-	"""Read the sqlite3 file for information, then return a tuple with that data."""
-	with connect() as connection:
-		products = connection.execute("SELECT * FROM products ORDER BY id").fetchall()
-		rows = []
-		for product in products:
-			host = urlparse(product["url"]).netloc.lower().removeprefix("www.")
-			product_id = (
-				unwrangle_product_reference(product["url"]).product_id
-				if host.endswith(("walmart.com", "homedepot.com", "lowes.com", "acehardware.com", "samsclub.com"))
-				else None
-			)
-			history = connection.execute(
-				"SELECT price, bulk_price, currency, status, error, observed_at FROM observations WHERE product_id = ? ORDER BY observed_at",
-				(product["id"],),
-			).fetchall()
-			rows.append({
-				"id": product["id"],
-				"product_id": product_id,
-				"url": product["url"],
-				"title": product["title"],
-				"source": product["source"],
-				"price": product["price"],
-				"bulk_price": product["bulk_price"],
-				"bulk_quantity": product["bulk_quantity"],
-				"currency": product["currency"],
-				"checked_at": product["checked_at"],
-				"error": product["error"],
-				"store_id": product["store_id"],
-				"history": [dict(observation) for observation in history],
-			})
-	return rows
-
-
 @app.before_request
 def protect_post_forms() -> None:
 	"""
@@ -643,75 +446,31 @@ def schedule_shutdown() -> None:
 
 
 def run_scan() -> None:
-	"""
-	## Runs a full scan of all products in the database.
-	This function initiates a scan, updates product details based on their latest observations,
-	and records observations for each product. It handles retries and ensures that only one URL is fetched
-	per second to avoid overwhelming the server.
-	"""
-	started = utc_now().isoformat()#Record the start time of the scan
-
-	#insert a new row into the scans table with the start time and status
-	with connect() as connection:
-		scan_id = connection.execute("INSERT INTO scans (started_at, status) VALUES (?, ?)", (started, "running")).lastrowid
-		products = connection.execute("SELECT * FROM products ORDER BY id").fetchall() #Retrieve all products from the database
-	previous_fetch = 0.0 #initialize a variable to track the time between fetches
-
-	#Iterate over each product in the list
-	for product in products:
-		#Developer mode always re-fetches so every response gets recorded to the dev database.
-		if not DEVELOPER_MODE and product["price"] is not None and cache_is_fresh(product["checked_at"]): #Skip if product is not availiable or the cache is fresh
-			continue
-		#Wait to ensure a minimum delay between fetches to avoid overwhelming the server
-		time.sleep(max(0, MIN_DELAY_SECONDS + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
-		previous_fetch = time.monotonic()
-		refresh_product(product)
-	#Mark the scan as complete in the database
-	with connect() as connection:
-		connection.execute("UPDATE scans SET completed_at = ?, status = ? WHERE id = ?", (utc_now().isoformat(), "completed", scan_id))
+	_run_scan(
+		connect=connect,
+		utc_now=utc_now,
+		developer_mode=DEVELOPER_MODE,
+		cache_is_fresh=cache_is_fresh,
+		min_delay_seconds=MIN_DELAY_SECONDS,
+		refresh_product=refresh_product,
+	)
 
 
 def refresh_product(product: sqlite3.Row) -> None:
-	"""Fetch the latest price for a single product row and record the result/observation."""
-	observed_at = utc_now().isoformat() #get the observed at timestamp for the current product
-
-	#Try to fetch the product details from the URl
-	try:
-		zip_state = None
-		if product["source"] == "Lowes" and product["store_id"]:
-			with connect() as connection:
-				store = connection.execute(
-					"SELECT zip_state FROM stores WHERE retailer = ? AND store_id = ?",
-					(product["source"], product["store_id"]),
-				).fetchone()
-			zip_state = store["zip_state"] if store else None
-		result = fetch_product(product["url"], store_id=product["store_id"], zip_state=zip_state)
-		status, error = "success", None
-	except Exception as fetch_error:  # A single URL must not cancel the scan.
-		result, status, error = {}, "error", str(fetch_error)
-
-	#Update the product details in the database with the new data and record the observation
-	with connect() as connection:
-		if product["store_id"] and (result.get("store_name") or result.get("store_location")):
-			connection.execute(
-				"UPDATE stores SET name = COALESCE(?, name), location = COALESCE(?, location) WHERE retailer = ? AND store_id = ? AND (name = ? OR location = ?)",
-				(result.get("store_name"), result.get("store_location"), product["source"], product["store_id"], f"Store {product['store_id']}", "Location pending"),
-			)
-		connection.execute("UPDATE products SET title = COALESCE(?, title), price = ?, bulk_price = ?, bulk_quantity = ?, currency = ?, checked_at = ?, error = ? WHERE id = ?", (result.get("title"), result.get("price"), result.get("bulk_price"), result.get("bulk_quantity"), result.get("currency"), observed_at, error, product["id"]))
-		connection.execute("INSERT INTO observations (product_id, price, bulk_price, currency, title, status, error, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (product["id"], result.get("price"), result.get("bulk_price"), result.get("currency"), result.get("title"), status, error, observed_at))
+	_refresh_product(
+		product,
+		connect=connect,
+		utc_now=utc_now,
+		fetch_product=fetch_product,
+	)
 
 
 def scan_allowed() -> bool:
-	"""Check if the user is allowed to query the API's to check prices"""
-	if DEVELOPER_MODE:
-		return True
-	#Connect to the database using the connect function
-	with connect() as connection:
-		#Execute a SQL query to select the latest completed data
-		# The quety orders the scans by their ID in descending order and limits the results to 1
-		scan = connection.execute("SELECT completed_at FROM scans WHERE status = 'completed' ORDER BY id DESC LIMIT 1").fetchone()
-	#Check if there is no scan or if the scan's completed date is not today
-	return not scan or local_calendar_date(scan["completed_at"]) != datetime.now().astimezone().date()
+	return _scan_allowed(
+		connect=connect,
+		developer_mode=DEVELOPER_MODE,
+		local_calendar_date=local_calendar_date,
+	)
 
 
 @app.route("/", methods=["GET"])
@@ -911,12 +670,16 @@ def add_store():
 	name = request.form.get("name", "").strip()
 	location = request.form.get("location", "").strip()
 	zip_state = request.form.get("zip_state", "").strip().upper()
+	zipcode = request.form.get("zipcode", "").strip()
 	if retailer not in {"Walmart", "Home Depot", "Lowes", "Ace Hardware"}:
 		return redirect(url_for("index", message="Choose a supported retailer."))
 	if not store_id.isdigit():
 		return redirect(url_for("index", message="Store ID must contain digits only."))
-	if retailer == "Lowes" and not zip_state:
-		return redirect(url_for("index", message="A ZIP code or state is required for Lowes stores."))
+	if retailer == "Lowes":
+		if not re.fullmatch(r"\d{5}", zipcode):
+			return redirect(url_for("index", message="Lowes stores need a 5-digit ZIP code."))
+		if not re.fullmatch(r"[A-Z]{2}", zip_state):
+			return redirect(url_for("index", message="Lowes stores need a 2-letter state code."))
 	name = name or f"Store {store_id}"
 	# Show Location pending until the search. 
 	location = location or "Location pending"
@@ -924,18 +687,35 @@ def add_store():
 	with connect() as connection:
 		try:
 			connection.execute(
-				"INSERT INTO stores (retailer, store_id, name, location, zip_state) VALUES (?, ?, ?, ?, ?)",
-				(retailer, store_id, name, location, zip_state or None),
+				"INSERT INTO stores (retailer, store_id, name, location, zip_state, zipcode) VALUES (?, ?, ?, ?, ?, ?)",
+				(retailer, store_id, name, location, zip_state or None, zipcode or None),
 			)
 		except sqlite3.IntegrityError:
-			if retailer == "Lowes" and zip_state:
+			if retailer == "Lowes":
 				connection.execute(
-					"UPDATE stores SET zip_state = ? WHERE retailer = ? AND store_id = ?",
-					(zip_state, retailer, store_id),
+					"UPDATE stores SET zip_state = ?, zipcode = ? WHERE retailer = ? AND store_id = ?",
+					(zip_state, zipcode, retailer, store_id),
 				)
-				return redirect(url_for("index", message="Lowes store ZIP/state updated."))
+				return redirect(url_for("index", message="Lowes store ZIP code/state updated."))
 			return redirect(url_for("index", message="That store is already saved for this retailer."))
 	return redirect(url_for("index", message="Store saved."))
+
+
+@app.post("/stores/<int:store_record_id>/remove")
+def remove_store(store_record_id: int):
+	"""Remove a saved store and reset products assigned to it to all stores."""
+	with connect() as connection:
+		store = connection.execute(
+			"SELECT retailer, store_id FROM stores WHERE id = ?", (store_record_id,)
+		).fetchone()
+		if store is None:
+			return redirect(url_for("index", message="Saved store was not found."))
+		connection.execute(
+			"UPDATE products SET store_id = NULL WHERE source = ? AND store_id = ?",
+			(store["retailer"], store["store_id"]),
+		)
+		connection.execute("DELETE FROM stores WHERE id = ?", (store_record_id,))
+	return redirect(url_for("index", message="Saved store removed; assigned products now use all stores."))
 
 
 @app.post("/remove/<int:product_id>")
@@ -959,6 +739,25 @@ def recheck_url(product_id: int):
 	return redirect(url_for("index", message="Re-checked that item."))
 
 
+@app.post("/recheck-selected")
+def recheck_selected():
+	"""Re-fetch only the checked products, ignoring the daily scan limit and freshness cache."""
+	selected_ids = sorted({int(value) for value in request.form.getlist("product_ids") if value.isdigit()})
+	if not selected_ids:
+		return redirect(url_for("index", message="Select at least one item to re-check."))
+	placeholders = ",".join("?" * len(selected_ids))
+	with connect() as connection:
+		products = connection.execute(f"SELECT * FROM products WHERE id IN ({placeholders}) ORDER BY id", selected_ids).fetchall()
+	previous_fetch = 0.0
+	for product in products:
+		#Keep the same pacing as a full scan so a large selection doesn't hammer the APIs
+		if previous_fetch:
+			time.sleep(max(0, MIN_DELAY_SECONDS + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
+		previous_fetch = time.monotonic()
+		refresh_product(product)
+	return redirect(url_for("index", message=f"Re-checked {len(products)} selected item{'s' if len(products) != 1 else ''}."))
+
+
 @app.post("/scan")
 def scan():
 	"""Check if a scan is allowed for the user, if so run the scan"""
@@ -971,7 +770,9 @@ def scan():
 @app.get("/export/json")
 def export_watchlist_json():
 	"""Export SQL database as a json file"""
-	content = json.dumps({"products": watchlist_export_rows()}, indent=2)
+	with connect() as connection:
+		products = watchlist_export_rows(connection)
+	content = json.dumps({"products": products}, indent=2)
 	return Response(
 		content,
 		mimetype="application/json",
@@ -982,11 +783,13 @@ def export_watchlist_json():
 @app.get("/export/csv")
 def export_watchlist_csv():
 	"""Export SQL database as a csv file"""
+	with connect() as connection:
+		products = watchlist_export_rows(connection)
 	output = io.StringIO(newline="")
 	fieldnames = ["id", "product_id", "url", "title", "source", "price", "bulk_price", "bulk_quantity", "currency", "checked_at", "error", "history"]
 	writer = csv.DictWriter(output, fieldnames=fieldnames)
 	writer.writeheader()
-	for product in watchlist_export_rows():
+	for product in products:
 		row = {field: product[field] for field in fieldnames if field != "history"}
 		row["history"] = json.dumps(product["history"], separators=(",", ":"))
 		writer.writerow(row)
@@ -995,110 +798,6 @@ def export_watchlist_csv():
 		mimetype="text/csv",
 		headers={"Content-Disposition": "attachment; filename=price-checker-watchlist.csv"},
 	)
-
-
-def validate_watchlist_database(path: Path) -> None:
-	"""Raise ValueError unless the file is a usable Price Checker SQLite database."""
-	with open(path, "rb") as handle:
-		header = handle.read(16)
-	if header != b"SQLite format 3\x00":
-		raise ValueError("That file is not a SQLite database.")
-	connection = sqlite3.connect(path)
-	try:
-		tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-	finally:
-		connection.close()
-	if "products" not in tables:
-		raise ValueError("That database does not contain a 'products' table.")
-
-
-def parse_watchlist_json(text: str) -> list[dict[str, object]]:
-	"""Parse a previously-exported, or your own personaly built, watchlist JSON file into a list of product rows."""
-	try:
-		payload = json.loads(text)
-	except json.JSONDecodeError as error:
-		raise ValueError(f"That file is not valid JSON: {error}") from error
-	products = payload.get("products") if isinstance(payload, dict) else None
-	if not isinstance(products, list):
-		raise ValueError("That JSON file does not look like a Price Checker export (missing a 'products' list).")
-	return products
-
-
-def parse_watchlist_csv(text: str) -> list[dict[str, object]]:
-	"""Parse a previously-exported, or your own personaly built, watchlist CSV file into a list of product rows."""
-	reader = csv.DictReader(io.StringIO(text))
-	if reader.fieldnames is None or "url" not in reader.fieldnames:
-		raise ValueError("That CSV file does not look like a Price Checker export (missing a 'url' column).")
-	products = []
-	for row in reader:
-		history_text = row.get("history") or "[]"
-		try:
-			row["history"] = json.loads(history_text)
-		except json.JSONDecodeError as error:
-			raise ValueError(f"That CSV file has an invalid 'history' column: {error}") from error
-		products.append(row)
-	return products
-
-
-def build_watchlist_database(path: Path, products: list[dict[str, object]]) -> None:
-	"""Create a fresh watchlist SQLite database at path from parsed product/history rows."""
-	connection = sqlite3.connect(path)
-	try:
-		# Create four tables to hold the users desired information
-		connection.executescript("""
-			CREATE TABLE products (
-				id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT,
-				source TEXT NOT NULL, store_id TEXT, price REAL, bulk_price REAL,
-				bulk_quantity INTEGER, currency TEXT, checked_at TEXT,
-				error TEXT
-			);
-			CREATE TABLE observations (
-				id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL,
-				price REAL, bulk_price REAL, currency TEXT, title TEXT, status TEXT NOT NULL,
-				error TEXT, observed_at TEXT NOT NULL,
-				FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
-			);
-			CREATE TABLE scans (
-				id INTEGER PRIMARY KEY, started_at TEXT NOT NULL,
-				completed_at TEXT, status TEXT NOT NULL
-			);
-			CREATE TABLE stores (
-				id INTEGER PRIMARY KEY, retailer TEXT NOT NULL, store_id TEXT NOT NULL,
-				name TEXT NOT NULL, location TEXT NOT NULL, zip_state TEXT,
-				UNIQUE(retailer, store_id)
-			);
-		""")
-		imported = 0
-		for product in products:
-			url = str(product.get("url") or "").strip()
-			source = str(product.get("source") or "").strip() or source_for(url)
-			if not url:
-				continue #Skip rows missing the one truly required field
-			cursor = connection.execute(
-				"INSERT INTO products (url, title, source, store_id, price, bulk_price, bulk_quantity, currency, checked_at, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				(url, product.get("title"), source, product.get("store_id"), product.get("price"),
-					product.get("bulk_price") or None, product.get("bulk_quantity") or None, product.get("currency"), product.get("checked_at"), product.get("error")),
-			)
-			product_id = cursor.lastrowid
-			history = product.get("history")
-			if not isinstance(history, list):
-				continue
-			for observation in history:
-				if not isinstance(observation, dict):
-					continue
-				if not observation.get("observed_at"):
-					continue #observed_at is NOT NULL; skip malformed entries rather than fail the whole import
-				connection.execute(
-					"INSERT INTO observations (product_id, price, bulk_price, currency, status, error, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-					(product_id, observation.get("price"), observation.get("bulk_price"), observation.get("currency"),
-						observation.get("status") or "ok", observation.get("error"), observation.get("observed_at")),
-				)
-			imported += 1
-		if imported == 0:
-			raise ValueError("That file did not contain any importable products.")
-		connection.commit()
-	finally:
-		connection.close()
 
 
 @app.get("/export/db")

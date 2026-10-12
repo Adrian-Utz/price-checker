@@ -4,14 +4,15 @@ A local flask app for maintaining a product watchlist and checking prices once p
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 10/9/2026  
-**Latest Version:** 0.0.7
+**Last Update on:** 10/12/2026  
+**Latest Version:** 0.0.8
 
 ## Main Capabilities
 1. Allow the user to input up to 20-100 URLs. (Customizable)
-2. Look up Walmart and Home Depot products through SerpApi engines. 
-3. Look up Walmart, Home Depot, Lowes, Ace Hardware, and Sam's Club items with Unwrangle's engines. Lowes store-specific lookups require a ZIP code or state alongside the store number.
-3a. Look up Lowes items through Apify's Lowes Product Lookup actor (by product ID and ZIP code).
+2. API Lookup  
+2a. Look up Walmart and Home Depot products through SerpApi engines.  
+2b. Look up Walmart, Home Depot, Lowes, Ace Hardware, and Sam's Club items with Unwrangle's engines. Lowes store-specific lookups require the store number, ZIP code, and state together.  
+2c. Look up Lowes items through Apify's Lowes Product Lookup actor (by product ID and ZIP code).
 4. Keep current results and historical observations in SQLite.
 5. Restrict the user to one completed scan per local calendar day, resetting at local midnight.
 6. Space requests with a minimum delay and randomized jitter.
@@ -84,7 +85,7 @@ SerpApi requests wait up to 90 seconds by default. Set `SERPAPI_TIMEOUT_SECONDS`
 
 When the browser tab unloads, the app sends a local shutdown signal and exits after a short grace period. This also applies to a refresh or navigation if no new app request arrives during that grace period.
 
-### Supported Api's
+### Supported Api providers
 
 #### SerpApi
 **Free Monthly Plan**  
@@ -144,20 +145,24 @@ price checker
 ├── changelog.md 			- A list of changes to the program.
 ├── charting.py				- Contains functions for chart creation.
 ├── check_for_update.py		- Checks the repo for the latest version. 
+├── database.py				- Functions for connections management and schema setup.
 ├── LICENSE					- Standard MIT license.
 ├── main.py					- Entrance file for the program.
+├── providers.py			- Holds the provider selection and API-specific behavior.
 ├── README.md				- This file.
 ├── requirements.txt		- A list of requirments to run the price-checker.
+├── scanner.py				- Functions that form the scan workflow.
 ├── serpapi_client.py		- Sends a request to a SerpApi API.
 ├── unwrangle_slien.py		- Sends a request to a Unwrangle API.
 ├── version.py				- Contains the Version Number.
+├── watchlist_io.py			- Contians the functions for importing and exporting your watchlists.
 ```
 
 ## GitDiagram
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="resources/dark_diagram.png">
-  <source media="(prefers-color-scheme: light)" srcset="resources/light_diagram.png">
-  <img alt="Architecture diagram of adrian-utz/price-checker" src="resources/light_diagram.png">
+  <source media="(prefers-color-scheme: dark)" srcset="resources/dark_diagram.webp">
+  <source media="(prefers-color-scheme: light)" srcset="resources/light_diagram.webp">
+  <img alt="Architecture diagram of adrian-utz/price-checker" src="resources/light_diagram.webp">
 </picture>
 
 ## Responsible use

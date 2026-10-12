@@ -31,7 +31,7 @@ Amazon: 10
 
 Written by: AJ Utz
 Written on: 8/26/2026
-Last Update: 9/10/2026
+Last Update: 10/9/2026
 """
 
 class UnwrangleError(RuntimeError):
@@ -254,14 +254,20 @@ class UnwrangleClient:
             raise UnwrangleError(f"Unwrangle error: {payload.get('error') or payload.get('message') or 'unknown error'}")
         return payload
 
-    def product(self, url: str, store_id: str | None = None, zip_state: str | None = None) -> dict[str, object]:
+    def product(
+        self,
+        url: str,
+        store_id: str | None = None,
+        zip_state: str | None = None,
+        zipcode: str | None = None,
+    ) -> dict[str, object]:
         reference = product_reference(url) #Determine the retailer
         if reference.retailer == "walmart":
             return self.walmart_detail(reference)
         elif reference.retailer == "home_depot":
             return self.home_depot_detail(reference, url, store_id)
         elif reference.retailer == "lowes":
-            return self.lowes_detail(reference, url, store_id, zip_state)
+            return self.lowes_detail(reference, url, store_id, zip_state, zipcode)
         elif reference.retailer == "ace_hardware":
             return self.ace_hardware_detail(reference, url, store_id)
         elif reference.retailer == "sams_club":
@@ -326,13 +332,18 @@ class UnwrangleClient:
         url: str,
         store_no: str | None = None,
         zip_state: str | None = None,
+        zipcode: str | None = None,
     ) -> dict[str, object]:
         parameters: dict[str, str] = {"url": url}
         if store_no:
-            if not zip_state or not zip_state.strip():
-                raise UnwrangleError("A ZIP code or state is required when requesting a Lowes product by store number.")
+            #Unwrangle requires zipcode, store_no, and zip_state together for store-wise queries
+            zipcode = (zipcode or "").strip()
+            zip_state = (zip_state or "").strip().upper()
+            if not zipcode or not zip_state:
+                raise UnwrangleError("A ZIP code and a state are both required when requesting a Lowes product by store number.")
             parameters["store_no"] = store_no
-            parameters["zip_state"] = zip_state.strip().upper()
+            parameters["zipcode"] = zipcode
+            parameters["zip_state"] = zip_state
         payload = self.request("lowes_detail", **parameters) #Send the Request
         detail, price, bulk = self._detail_and_price(payload)
         if price is None: #If price is not found

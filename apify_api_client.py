@@ -82,9 +82,9 @@ class ApifyClient:
         self.response_history.append(item)
         return item
 
-    def product(self, url: str, store_id: str | None = None, zip_state: str | None = None) -> dict[str, object]:
+    def product(self, url: str, store_id: str | None = None, zip_state: str | None = None, zipcode: str | None = None) -> dict[str, object]:
         product_id = lowes_product_id(url)
-        zip_code = (zip_state or "").strip()
+        zip_code = (zipcode or zip_state or "").strip()
 
         if not ZIP_PATTERN.fullmatch(zip_code):
             zip_code = os.environ.get("APIFY_LOWES_ZIP", "").strip()
@@ -116,9 +116,12 @@ class ApifyClient:
 
         products = store.get("products")
         item = products.get(product_id) if isinstance(products, dict) else None
+        #The response nests items as {"products": {"<product_id>": {...}}}; that key is the product ID.
+        response_product_id = product_id
 
         if not isinstance(item, dict) and isinstance(products, dict) and products:
-            item = next(iter(products.values()))
+            response_product_id, item = next(iter(products.items()))
+            response_product_id = str(response_product_id)
         if not isinstance(item, dict):
             raise ApifyError("Apify returned the store but no product data.")
         
@@ -136,6 +139,7 @@ class ApifyClient:
                 "price": None,
                 "bulk_price": regular,
                 "currency": "USD",
+                "product_id": response_product_id,
                 **self._store_fields(store),
             }
         if price is None and not has_bulk:
@@ -144,6 +148,7 @@ class ApifyClient:
             "title": item.get("name") or item.get("description"),
             "price": price,
             "currency": "USD",
+            "product_id": response_product_id,
         }
         if has_bulk and (price is None or bulk_price < price):
             product["bulk_price"], product["bulk_quantity"] = bulk_price, bulk_quantity
