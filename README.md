@@ -23,6 +23,7 @@ A local flask app for maintaining a product watchlist and checking prices once p
 11. Dev Mode.
 12. Creates a line graph for viewing an item's history.
 
+
 ## Setting up a Virtual Environment
 
 Setting up a virtual environment using Windows Powershell. (Not required but recommended)
