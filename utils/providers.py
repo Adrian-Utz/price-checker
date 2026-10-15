@@ -9,7 +9,7 @@ from api_clients.unwrangle_client import UnwrangleClient
 """
 Holds the provider selection and API-specific behavior.
 
-Last Update: 10/12/2026
+Last Update: 10/13/2026
 Written on: 10/12/2026
 Written by: AJ Utz
 """
@@ -79,12 +79,13 @@ def serpapi_ready() -> bool:
 def unwrangle_ready() -> bool:
 	return bool(os.environ.get("UNWRANGLE_API_KEY"))
 
-
+#Is Apify ready? API key is found.
 def apify_ready() -> bool:
 	return bool(os.environ.get("APIFY_API_TOKEN"))
 
 
 def provider_ready(provider: str) -> bool:
+	#Call this to check if the API porviders are ready.
 	if provider == "serpapi":
 		return serpapi_ready()
 	if provider == "unwrangle":

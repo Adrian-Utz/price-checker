@@ -12,12 +12,13 @@ from api_clients.unwrangle_client import product_reference as unwrangle_product_
 """
 Helper methods for watchlist importing and exporting. 
 
-Last Update: 10/12/2026
+Last Update: 10/13/2026
 Written on: 10/10/2026
 Written by: AJ Utz
 """
 
 def source_for(url: str) -> str:
+	"""Search the Url for the source name."""
 	host = urlparse(url).netloc.lower().removeprefix("www.")
 	if "homedepot" in host:
 		return "Home Depot"

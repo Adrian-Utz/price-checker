@@ -68,7 +68,7 @@
 }
 
 [data-theme="forest"] {
-    --page-background: linear-gradient(90deg, #29462f 0%, #243a28 50%, #1e2e21 100%);
+    --page-background: linear-gradient(90deg, #487951 0%, #335339 50%, #293f2d 100%);
     --surface: #23442a;
     --text: #f1f4ed;
     --muted-text: #96a099;

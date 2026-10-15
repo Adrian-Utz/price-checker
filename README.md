@@ -137,26 +137,33 @@ The price checker accepts user made databases from the following filetypes: .jso
 
 ```
 price checker
+├── api_clients
+│	├── apify_api_client.py	- Sends a request to a Apify API.
+│   ├── serpapi_client.py	- Sends a request to a SerpApi API.
+│   ├── unwrangle_slien.py	- Sends a request to a Unwrangle API.
+├── resources
+│   ├── dark_diagram.webp	- Image for the readme
+│   ├── light_diagram.webp	- Image for the readme
 ├── static
 │	├── stylesheet.css		- Style for the HTML.
 ├── templates
 │	├── page.html 			- Main HTML page for the checker.
 │	├── dev_responses.html	- Dev Sheet to check errors and raw JSON responces.
-├── apify_api_client.py		- Sends a request to the Apify Lowes Product Lookup actor.
+├── utils
+│	├── charting.py				- Contains functions for chart creation.
+│	├── check_for_update.py		- Checks the repo for the latest version. 
+│	├── database.py				- Functions for connections management and schema setup.
+│	├── providers.py			- Holds the provider selection and API-specific behavior.
+│	├── scanner.py				- Functions that form the scan workflow.
+│	├── watchlist_io.py			- Contians the functions for importing and exporting your watchlists.
 ├── changelog.md 			- A list of changes to the program.
-├── charting.py				- Contains functions for chart creation.
-├── check_for_update.py		- Checks the repo for the latest version. 
-├── database.py				- Functions for connections management and schema setup.
+├── CODE_OF_CONDUCT.md		- The code of conduct
 ├── LICENSE					- Standard MIT license.
 ├── main.py					- Entrance file for the program.
-├── providers.py			- Holds the provider selection and API-specific behavior.
 ├── README.md				- This file.
 ├── requirements.txt		- A list of requirments to run the price-checker.
-├── scanner.py				- Functions that form the scan workflow.
-├── serpapi_client.py		- Sends a request to a SerpApi API.
-├── unwrangle_slien.py		- Sends a request to a Unwrangle API.
+├── SECURITY.md				- The Security file
 ├── version.py				- Contains the Version Number.
-├── watchlist_io.py			- Contians the functions for importing and exporting your watchlists.
 ```
 
 ## GitDiagram

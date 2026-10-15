@@ -42,14 +42,14 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 from urllib.parse import unquote, urlparse
-
+from werkzeug.serving import make_server
 from flask import Flask, Response, abort, redirect, render_template, request, send_file, session, url_for
+
+from version import VERSION_NUMBER
 from api_clients.serpapi_client import SerpApiClient, product_bulk_price as serpapi_bulk_price, product_candidates, product_price as serpapi_product_price
 from api_clients.unwrangle_client import product_bulk_price as unwrangle_bulk_price, product_price as unwrangle_product_price
 from utils.charting import chart_observations_in_range, format_observed_at_utc, price_chart
-from version import VERSION_NUMBER
 import utils.check_for_update as check_for_update
-from werkzeug.serving import make_server
 from utils.watchlist_io import (
 	build_watchlist_database,
 	parse_watchlist_csv,
