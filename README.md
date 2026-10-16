@@ -138,7 +138,7 @@ The price checker accepts user made databases from the following filetypes: .jso
 ```
 price checker
 ├── api_clients
-│	├── apify_api_client.py	- Sends a request to a Apify API.
+│   ├── apify_api_client.py	- Sends a request to a Apify API.
 │   ├── serpapi_client.py	- Sends a request to a SerpApi API.
 │   ├── unwrangle_slien.py	- Sends a request to a Unwrangle API.
 ├── resources
