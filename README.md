@@ -138,12 +138,12 @@ The price checker accepts user made databases from the following filetypes: .jso
 ```
 price checker
 ├── api_clients
-│   ├── apify_api_client.py	- Sends a request to a Apify API.
-│   ├── serpapi_client.py	- Sends a request to a SerpApi API.
-│   ├── unwrangle_slien.py	- Sends a request to a Unwrangle API.
+│	├── apify_api_client.py	- Sends a request to a Apify API.
+│	├── serpapi_client.py	- Sends a request to a SerpApi API.
+│	├── unwrangle_slien.py	- Sends a request to a Unwrangle API.
 ├── resources
-│   ├── dark_diagram.webp	- Image for the readme
-│   ├── light_diagram.webp	- Image for the readme
+│	├── dark_diagram.webp	- Image for the readme
+│	├── light_diagram.webp	- Image for the readme
 ├── static
 │	├── stylesheet.css		- Style for the HTML.
 ├── templates
