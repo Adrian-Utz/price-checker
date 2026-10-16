@@ -107,10 +107,11 @@ Written by: AJ Utz
 				</form>
 			</div>
 		</dialog>
-  <div class="notice">Use responsibly. Notice! Your search may not always succeed! Retailer pages can change, impose rate limits, or prohibit access to their webpages that can disrupt the API's workflow. This tool spaces requests, and uses a daily scan limit. Check your current plan limits for SerpApi, Apify,and Unwrangle.</div>
+  <div class="notice">Use responsibly. Notice! Your search may not always succeed! Retailer pages can change, impose rate limits, or prohibit access to their webpages that can disrupt the API's workflow. This tool spaces requests, and uses a daily scan limit. Check your current plan limits for SerpApi, Apify, and Unwrangle.</div>
   {% if message %}<p class="notice">{{ message }}</p>{% endif %}
 	{% if not serpapi_ready %}<p class="notice"><strong>One setup step:</strong> set <code>SERPAPI_API_KEY</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
 	{% if not unwrangle_ready %}<p class="notice"><strong>One setup step:</strong> set <code>UNWRANGLE_API_KEY</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
+	{% if not apify_ready %}<p class="notice"><strong>One setup step:</strong> set <code>APIFY_API_TOKEN</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
 	<section>
 		<!--In this section we have a place for user input, and the option to track another store-->
 		<h2>Track a product</h2>
