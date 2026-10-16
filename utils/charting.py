@@ -109,7 +109,7 @@ def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | N
 		f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Price history with {len(points)} observations">'
 		f'{"".join(y_axis_ticks)}<line x1="{left}" y1="{top}" x2="{left}" y2="{axis_y}" stroke="#9ca597" stroke-width="1"/>'
 		f'<line x1="{left}" y1="{axis_y}" x2="{width - right}" y2="{axis_y}" stroke="#9ca597" stroke-width="1"/>'
-		f'<polyline points="{line}" fill="none" stroke="var(--lg-main-line)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'
+		f'<polyline points="{line}" fill="none" stroke="var(--lg-main-line, #d06b35)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'
 		f'{bulk_series}{"".join(marks)}{"".join(bulk_marks)}{"".join(x_axis_labels)}{legend}</svg>'
 	)
 
