@@ -4,8 +4,8 @@ A local flask app for maintaining a product watchlist and checking prices once p
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 10/12/2026  
-**Latest Version:** 0.0.8
+**Last Update on:** 10/16/2026  
+**Latest Version:** 0.0.9
 
 ## Main Capabilities
 1. Allow the user to input up to 20-100 URLs. (Customizable)
@@ -226,3 +226,4 @@ Only check pages where automated access is permitted by the site's terms and app
 - Import/export the raw SQLite database file to switch between watchlists
 - On Python 3.15 and newer, selected imports are loaded only when first used. Older Python versions ignore this setting and import them normally.
 - Apify API integration (Lowes), including bulk price display and `bulk_price`/`bulk_quantity` CSV export columns.
+- Local server shutdown is now togglable.

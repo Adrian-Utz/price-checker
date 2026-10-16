@@ -85,7 +85,7 @@ from utils.providers import (
 Main entry point into the program. This is a web application with a python backend. Used to keep track of certian items that the user selects.
 Made with Flask.
 
-Last Update: 10/12/2026
+Last Update: 10/16/2026
 Written on: 7/27/2026
 Written by: AJ Utz
 """
@@ -117,6 +117,9 @@ api_usage = {
 	"unwrangle_starting_credits": None,
 }
 serpapi_usage_checked_at = 0.0
+
+# Sharing variable for group testing with Live Share
+group_testing = False
 
 
 def check_for_update_background() -> None:
@@ -433,11 +436,14 @@ def cancel_pending_shutdown() -> None:
 			shutdown_timer = None
 
 def stop_server() -> None:
-	if server is not None:
+	if not group_testing and server is not None:
 		server.shutdown()
 
 def schedule_shutdown() -> None:
 	global shutdown_timer
+	if group_testing:
+		cancel_pending_shutdown()
+		return
 	cancel_pending_shutdown()
 	with shutdown_lock:
 		shutdown_timer = threading.Timer(1.5, stop_server)
@@ -571,6 +577,7 @@ def dev_responses():
 
 @app.post("/dev/responses/<int:response_id>/replay")
 def replay_dev_response_route(response_id: int):
+	"""Replay and show what data is getting pulled from the responce. No API credits are used"""
 	if not DEVELOPER_MODE:
 		abort(404)
 	with connect_dev() as connection:
