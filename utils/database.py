@@ -56,7 +56,7 @@ def init_db() -> None:
 				id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT,
 				source TEXT NOT NULL, store_id TEXT, price REAL, bulk_price REAL,
 				bulk_quantity INTEGER, currency TEXT, checked_at TEXT,
-				error TEXT, retailer_product_id TEXT
+				error TEXT, retailer_product_id TEXT, api_provider TEXT
 			);
 			CREATE TABLE IF NOT EXISTS observations (
 				id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL,
@@ -83,6 +83,8 @@ def init_db() -> None:
 			connection.execute("ALTER TABLE products ADD COLUMN bulk_quantity INTEGER")
 		if "retailer_product_id" not in product_columns:
 			connection.execute("ALTER TABLE products ADD COLUMN retailer_product_id TEXT")
+		if "api_provider" not in product_columns:
+			connection.execute("ALTER TABLE products ADD COLUMN api_provider TEXT")
 		observation_columns = {row[1] for row in connection.execute("PRAGMA table_info(observations)")}
 		if "bulk_price" not in observation_columns:
 			connection.execute("ALTER TABLE observations ADD COLUMN bulk_price REAL")
@@ -101,7 +103,7 @@ def init_db() -> None:
 					id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT,
 					source TEXT NOT NULL, store_id TEXT, price REAL, bulk_price REAL,
 					bulk_quantity INTEGER, currency TEXT, checked_at TEXT,
-					error TEXT, retailer_product_id TEXT
+					error TEXT, retailer_product_id TEXT, api_provider TEXT
 				)
 			""")
 			connection.execute("""

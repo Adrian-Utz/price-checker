@@ -73,10 +73,12 @@ from utils.scanner import (
 )
 from utils.providers import (
 	API_PROVIDERS,
+	ITEM_PROVIDERS,
 	apify_ready,
 	api_provider,
 	fetch_product as _fetch_product,
 	provider_ready,
+	providers_for_retailer,
 	serpapi_ready,
 	unwrangle_ready,
 )
@@ -119,7 +121,8 @@ api_usage = {
 serpapi_usage_checked_at = 0.0
 
 # Sharing variable for group testing with Live Share
-group_testing = False
+auto_server_shutdown = True #This variable turns off the automatic server shutdown whenever a user closes a tab
+edit_env = True #This varaible turns off the ability to edit the .env file 
 
 
 def check_for_update_background() -> None:
@@ -265,12 +268,14 @@ def fetch_product(
 	store_id: str | None = None,
 	zip_state: str | None = None,
 	zipcode: str | None = None,
+	provider: str | None = None,
 ) -> dict[str, object]:
 	return _fetch_product(
 		url,
 		store_id=store_id,
 		zip_state=zip_state,
 		zipcode=zipcode,
+		provider=provider,
 		mark_serpapi_usage_stale=mark_serpapi_usage_stale,
 		update_unwrangle_usage=update_unwrangle_usage,
 		record_dev_api_responses=record_dev_api_responses,
@@ -436,12 +441,12 @@ def cancel_pending_shutdown() -> None:
 			shutdown_timer = None
 
 def stop_server() -> None:
-	if not group_testing and server is not None:
+	if auto_server_shutdown and server is not None:
 		server.shutdown()
 
 def schedule_shutdown() -> None:
 	global shutdown_timer
-	if group_testing:
+	if auto_server_shutdown == False:
 		cancel_pending_shutdown()
 		return
 	cancel_pending_shutdown()
@@ -544,11 +549,13 @@ def index():
 		provider_is_ready=provider_ready(api_provider()), 
 		developer_mode=DEVELOPER_MODE, 
 		version_number=VERSION_NUMBER, 
-		env_file_text=read_env_file_text(), 
+		env_file_text=read_env_file_text() if edit_env else "",
+		edit_env=edit_env,
 		update_available=update_available, 
 		latest_version=latest_version, 
 		releases_url=check_for_update.get_latest_release_url(),
 		api_usage=api_usage_summary(),
+		providers_for_retailer=providers_for_retailer,
 	)
 
 
@@ -667,6 +674,21 @@ def set_store(product_id: int):
 			return redirect(url_for("index", message="Choose a saved store for this retailer."))
 		connection.execute("UPDATE products SET store_id = ? WHERE id = ?", (store_id or None, product_id))
 	return redirect(url_for("index", message="Store selection updated."))
+
+
+@app.post("/item-provider/<int:product_id>")
+def set_item_provider(product_id: int):
+	"""Pin one item to a specific API provider, or clear the pin to follow the global provider."""
+	provider = request.form.get("provider", "").strip().lower()
+	with connect() as connection:
+		product = connection.execute("SELECT source FROM products WHERE id = ?", (product_id,)).fetchone()
+		if product is None:
+			return redirect(url_for("index", message="Product was not found."))
+		if provider and (provider not in ITEM_PROVIDERS or provider not in providers_for_retailer(product["source"])):
+			return redirect(url_for("index", message=f"That API provider does not support {product['source']}."))
+		connection.execute("UPDATE products SET api_provider = ? WHERE id = ?", (provider or None, product_id))
+	message = f"This item will always use {provider}." if provider else "This item now follows the global API provider."
+	return redirect(url_for("index", message=message))
 
 
 @app.post("/stores/add")
@@ -793,7 +815,7 @@ def export_watchlist_csv():
 	with connect() as connection:
 		products = watchlist_export_rows(connection)
 	output = io.StringIO(newline="")
-	fieldnames = ["id", "product_id", "url", "title", "source", "price", "bulk_price", "bulk_quantity", "currency", "checked_at", "error", "history"]
+	fieldnames = ["id", "product_id", "url", "title", "source", "price", "bulk_price", "bulk_quantity", "currency", "checked_at", "error", "api_provider", "history"]
 	writer = csv.DictWriter(output, fieldnames=fieldnames)
 	writer.writeheader()
 	for product in products:
@@ -866,6 +888,8 @@ def set_api_provider():
 @app.post("/settings/env")
 def save_env_file():
 	"""Update the user's .env"""
+	if not edit_env:
+		abort(403, description="Editing the .env file is disabled.")
 	try:
 		content = request.form.get("env_content", "")
 		save_env_file_text(content)

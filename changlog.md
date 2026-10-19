@@ -30,3 +30,6 @@
 
 # [v0.0.9](https://github.com/Adrian-Utz/price-checker/releases/tag/0.0.9)
 - Added a `group_testing` variable. Set it to `True` and the local server doesn't shutdown every time the webpage is closed. Set it to `False` for the original behavior. Fixed the PNG export: the price line relied on a CSS variable that isn’t available when the SVG is rasterized as an image. It now has a fallback color, while the page’s theme color still takes precedence.
+
+# [v0.0.10](https://github.com/Adrian-Utz/price-checker/releases/tag/0.0.9)
+- Added some more variables in `main.py` to help with [Live Sharing](https://marketplace.visualstudio.com/items?itemName=MS-vsliveshare.vsliveshare). Added the ability to map Api Providers to products. Allowing the user to map out their entire watch list. Click an item's retailer button and use the new `API for this item` drop down. the row shows an `API <name>` label when an item is pinned. Unpinned items use the global provider at the top of the page. Added a scroll persistence script in `page.html` it will save your position every time you reload the page.

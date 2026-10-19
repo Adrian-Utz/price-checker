@@ -76,7 +76,13 @@ def refresh_product(
 				).fetchone()
 			if store:
 				zip_state, zipcode = store["zip_state"], store["zipcode"]
-		result = fetch_product(product["url"], store_id=product["store_id"], zip_state=zip_state, zipcode=zipcode)
+		result = fetch_product(
+			product["url"],
+			store_id=product["store_id"],
+			zip_state=zip_state,
+			zipcode=zipcode,
+			provider=product["api_provider"] if "api_provider" in product.keys() else None,
+		)
 		status, error = "success", None
 	except Exception as fetch_error:  # A single URL must not cancel the scan.
 		result, status, error = {}, "error", str(fetch_error)

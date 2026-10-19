@@ -21,6 +21,20 @@ def api_provider() -> str:
 	return value if value in API_PROVIDERS else "auto"
 
 
+#Providers a single item can be pinned to. "auto" is left out because an empty mapping already means the global setting.
+ITEM_PROVIDERS = ("serpapi", "unwrangle", "apify")
+
+def providers_for_retailer(retailer: str) -> tuple[str, ...]:
+	"""Return the providers that can look up an item from the given retailer name (as stored in products.source)."""
+	if retailer == "Lowes":
+		return ("unwrangle", "apify")
+	if retailer in {"Ace Hardware", "Sams Club"}:
+		return ("unwrangle",)
+	if retailer in {"Walmart", "Home Depot"}:
+		return ("serpapi", "unwrangle")
+	return ()
+
+
 def fetch_product(
 	url: str,
 	store_id: str | None = None,
@@ -30,10 +44,11 @@ def fetch_product(
 	mark_serpapi_usage_stale: Callable[[], None],
 	update_unwrangle_usage: Callable[[list[dict[str, object]]], None],
 	record_dev_api_responses: Callable[[str, str, list[dict[str, object]], str | None], None],
+	provider: str | None = None,
 ) -> dict[str, object]:
-	"""Fetch which store ID Api to call"""
+	"""Fetch which store ID Api to call. A per-item provider overrides the global provider setting."""
 	host = urlparse(url).netloc.lower().removeprefix("www.")
-	provider = api_provider()
+	provider = provider if provider in ITEM_PROVIDERS else api_provider()
 	client = None
 	error = None
 	# SerpApi only covers Walmart and Home Depot; Unwrangle covers every supported retailer.

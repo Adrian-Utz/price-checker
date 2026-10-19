@@ -28,19 +28,19 @@ A local flask app for maintaining a product watchlist and checking prices once p
 
 Setting up a virtual environment using Windows Powershell. (Not required but recommended)
 1. In the directory you put the program: 
-```cmd
+```powershell
 python -m venv .venv
 ```
 2. Then: 
-```cmd
+```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 3. Install dependancies: 
-```cmd
+```powershell
 python -m pip install -r requirements.txt
 ```
 4. Run the file: 
-```cmd
+```powershell
 python main.py
 ```
 
@@ -87,6 +87,7 @@ SerpApi requests wait up to 90 seconds by default. Set `SERPAPI_TIMEOUT_SECONDS`
 When the browser tab unloads, the app sends a local shutdown signal and exits after a short grace period. This also applies to a refresh or navigation if no new app request arrives during that grace period.
 
 ### Supported Api providers
+The provider buttons at the top of the page set the global provider. To pin a single item to one provider, click its retailer button in the watchlist and choose **API for this item**. That item then always uses the chosen provider on every check, and choosing the global option clears the pin. Only providers that support the item's retailer are offered.
 
 #### SerpApi
 **Free Monthly Plan**  
@@ -181,6 +182,7 @@ Only check pages where automated access is permitted by the site's terms and app
 
 ### Upcoming / Noted
 
+- Resetting your place after you run a function can get annoying. Add a page location persistance function.
 - Mapping 2 datasheets together.
 - Persistance to all store numbers. 
 - Combine similar items onto a single line graph, then export as an image.
@@ -227,3 +229,4 @@ Only check pages where automated access is permitted by the site's terms and app
 - On Python 3.15 and newer, selected imports are loaded only when first used. Older Python versions ignore this setting and import them normally.
 - Apify API integration (Lowes), including bulk price display and `bulk_price`/`bulk_quantity` CSV export columns.
 - Local server shutdown is now togglable.
+- Setting preferances. Allowing the user to map an api to a single item so every time the check is called it uses that mapped api. 

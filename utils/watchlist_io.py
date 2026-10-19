@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from api_clients.unwrangle_client import product_reference as unwrangle_product_reference
+from utils.providers import ITEM_PROVIDERS
 
 """
 Helper methods for watchlist importing and exporting. 
@@ -62,6 +63,7 @@ def watchlist_export_rows(connection: sqlite3.Connection) -> list[dict[str, obje
 			"checked_at": product["checked_at"],
 			"error": product["error"],
 			"store_id": product["store_id"],
+			"api_provider": product["api_provider"],
 			"history": [dict(observation) for observation in history],
 		})
 	return rows
@@ -120,7 +122,7 @@ def build_watchlist_database(path: Path, products: list[dict[str, object]]) -> N
 				id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT,
 				source TEXT NOT NULL, store_id TEXT, price REAL, bulk_price REAL,
 				bulk_quantity INTEGER, currency TEXT, checked_at TEXT,
-				error TEXT, retailer_product_id TEXT
+				error TEXT, retailer_product_id TEXT, api_provider TEXT
 			);
 			CREATE TABLE observations (
 				id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL,
@@ -145,10 +147,11 @@ def build_watchlist_database(path: Path, products: list[dict[str, object]]) -> N
 			if not url:
 				continue
 			cursor = connection.execute(
-				"INSERT INTO products (url, title, source, store_id, price, bulk_price, bulk_quantity, currency, checked_at, error, retailer_product_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO products (url, title, source, store_id, price, bulk_price, bulk_quantity, currency, checked_at, error, retailer_product_id, api_provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				(url, product.get("title"), source, product.get("store_id"), product.get("price"),
 					product.get("bulk_price") or None, product.get("bulk_quantity") or None, product.get("currency"), product.get("checked_at"), product.get("error"),
-					str(product.get("product_id")) if product.get("product_id") else None),
+					str(product.get("product_id")) if product.get("product_id") else None,
+					product.get("api_provider") if product.get("api_provider") in ITEM_PROVIDERS else None),
 			)
 			product_id = cursor.lastrowid
 			history = product.get("history")

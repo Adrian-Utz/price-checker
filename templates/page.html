@@ -32,7 +32,7 @@ Written by: AJ Utz
 			{% endif %}
 			<form class="provider-select" method="post" action="{{ url_for('set_api_provider') }}">
 				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-				<span class="provider-label">API provider</span>
+				<span class="provider-label">Global API provider</span>
 				<button class="provider-button {{ 'active' if api_provider == 'auto' }}" name="provider" value="auto" title="Pick the best provider per retailer">Auto</button>
 				<button class="provider-button {{ 'active' if api_provider == 'serpapi' }}" name="provider" value="serpapi" title="Always use SerpApi">SerpApi</button>
 				<button class="provider-button {{ 'active' if api_provider == 'unwrangle' }}" name="provider" value="unwrangle" title="Always use Unwrangle">Unwrangle</button>
@@ -71,8 +71,10 @@ Written by: AJ Utz
 						<option value="sun">Sun</option>
 					</select>
 				<!--Env editor button-->
+				{% if edit_env %}
 				<button class="env-button" type="button" onclick="document.getElementById('env-editor').showModal()">Edit .env</button>
-				<!--Allerts if the user has configured their Api keys-->
+				{% endif %}
+				<!--Alerts if the user has configured their Api keys-->
 				<span class="status {{ '' if serpapi_ready else 'warning' }}">
 					SerpApi {{ 'ready' if serpapi_ready else 'API key needed' }}
 				</span>
@@ -85,6 +87,7 @@ Written by: AJ Utz
 			</div>
 			</div>
 	</header>
+		{% if edit_env %}
 		<dialog class="history-modal" id="env-editor">
 			<!--Editor popup for .env file, Allows the user to change their API key on the fly.-->
 			<div class="modal-header">
@@ -107,6 +110,7 @@ Written by: AJ Utz
 				</form>
 			</div>
 		</dialog>
+		{% endif %}
   <div class="notice">Use responsibly. Notice! Your search may not always succeed! Retailer pages can change, impose rate limits, or prohibit access to their webpages that can disrupt the API's workflow. This tool spaces requests, and uses a daily scan limit. Check your current plan limits for SerpApi, Apify, and Unwrangle.</div>
   {% if message %}<p class="notice">{{ message }}</p>{% endif %}
 	{% if not serpapi_ready %}<p class="notice"><strong>One setup step:</strong> set <code>SERPAPI_API_KEY</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
@@ -208,15 +212,28 @@ Written by: AJ Utz
 						<button class="retailer-button" type="button" onclick="document.getElementById('store-{{ product.id }}').showModal()">{{ product.source }}</button>
 						{% set selected_store = (stores_by_retailer.get(product.source, []) | selectattr('store_id', 'equalto', product.store_id) | list | first) %}
 						{% if selected_store %}<span class="store-number">Store {{ selected_store.store_id }} · {{ selected_store.name }}</span>{% elif product.store_id %}<span class="store-number">Store {{ product.store_id }}</span>{% else %}<span class="store-number muted">All stores</span>{% endif %}
+						{% if product.api_provider %}<span class="store-number">API: {{ product.api_provider }}</span>{% endif %}
 						<dialog class="history-modal store-modal" id="store-{{ product.id }}">
 							<div class="modal-header">
 								<div>
-									<p class="eyebrow">Store selection</p>
+									<p class="eyebrow">Store and API selection</p>
 									<h3>{{ product.source }}</h3>
 								</div>
 								<form method="dialog"><button class="modal-close" aria-label="Close store selection">Close</button></form>
 							</div>
 							<div class="modal-content">
+								<form method="post" action="{{ url_for('set_item_provider', product_id=product.id) }}">
+									<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+									<label for="item-provider-{{ product.id }}">API for this item</label>
+									<select id="item-provider-{{ product.id }}" name="provider">
+										<option value="">Use global provider ({{ api_provider }})</option>
+										{% for option in providers_for_retailer(product.source) %}
+										<option value="{{ option }}" {% if product.api_provider == option %}selected{% endif %}>Always use {{ option }}</option>
+										{% endfor %}
+									</select>
+									<div class="modal-actions"><button type="submit">Save API</button></div>
+								</form>
+								<hr>
 								<form method="post" action="{{ url_for('set_store', product_id=product.id) }}">
 									<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 									<label for="store-id-{{ product.id }}">Saved store</label>
@@ -461,4 +478,20 @@ Written by: AJ Utz
 				button.disabled = false;
 			});
 	}
+</script>
+<script>
+    // 1. Restore the scroll position when the page loads
+    document.addEventListener("DOMContentLoaded", function() {
+        const scrollPosition = sessionStorage.getItem("scrollPosition");
+        if (scrollPosition) {
+            window.scrollTo(0, parseInt(scrollPosition, 10));
+            // Optional: Clear it if you only want it to persist once
+            // sessionStorage.removeItem("scrollPosition"); 
+        }
+    });
+
+    // 2. Save the scroll position right before the page unloads (refresh/submit)
+    window.addEventListener("beforeunload", function() {
+        sessionStorage.setItem("scrollPosition", window.scrollY);
+    });
 </script>
