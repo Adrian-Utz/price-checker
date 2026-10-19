@@ -87,7 +87,7 @@ from utils.providers import (
 Main entry point into the program. This is a web application with a python backend. Used to keep track of certian items that the user selects.
 Made with Flask.
 
-Last Update: 10/16/2026
+Last Update: 10/19/2026
 Written on: 7/27/2026
 Written by: AJ Utz
 """

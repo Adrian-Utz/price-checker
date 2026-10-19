@@ -4,8 +4,8 @@ A local flask app for maintaining a product watchlist and checking prices once p
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 10/16/2026  
-**Latest Version:** 0.0.9
+**Last Update on:** 10/19/2026  
+**Latest Version:** 0.0.10
 
 ## Main Capabilities
 1. Allow the user to input up to 20-100 URLs. (Customizable)

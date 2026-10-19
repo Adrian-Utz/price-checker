@@ -12,7 +12,7 @@ ProductRefresh = Callable[[sqlite3.Row], None]
 """
 Here are the functions that form the scan workflow.
 
-Last Update: 10/12/2026
+Last Update: 10/19/2026
 Written on: 10/12/2026
 Written by: AJ Utz
 """

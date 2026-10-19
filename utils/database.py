@@ -14,7 +14,7 @@ DEV_DATABASE_PATH = Path(os.environ.get("PRICE_CHECKER_DEV_DB", ROOT / "price_ch
 """
 Contains the functions for connections management and schema setup.
 
-Last Update: 10/12/2026
+Last Update: 10/19/2026
 Written on: 10/12/2026
 Written by: AJ Utz
 """
