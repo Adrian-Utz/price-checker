@@ -33,3 +33,65 @@
 
 # [v0.0.10](https://github.com/Adrian-Utz/price-checker/releases/tag/0.0.10)
 - Added some more variables in `main.py` to help with [Live Sharing](https://marketplace.visualstudio.com/items?itemName=MS-vsliveshare.vsliveshare). Added the ability to map Api Providers to products. Allowing the user to map out their entire watch list. Click an item's retailer button and use the new `API for this item` drop down. the row shows an `API <name>` label when an item is pinned. Unpinned items use the global provider at the top of the page. Added a scroll persistence script in `page.html` it will save your position every time you reload the page.
+
+# [v0.1.0](https://github.com/Adrian-Utz/price-checker/releases/tag/0.1.0)
+- Perhaps the greatest undertaking of this program. Adding the ability to run the program on a LAN or over the internet. For this part I seperated it into 10 developement phases. Phases 1,2,3 and 5 give a working mulit-user LAN mode over HTTP. Phase 4 and 6 are about user input, serving and LAN TLS. Phase 6 also sets up the production server, and phase 7 is all about public mode. Phases 8, 9 and 10 cover UI, tests, and documentation.  
+
+### Phase 1:
+
+**Config**
+
+* utils/config.py reads PRICE_CHECKER_MODE (local, lan or public) and derives host, port, TLS, data directory, auth requirement, shutdown behavior and feature flags.
+* Local mode always binds 127.0.0.1
+* PRICE_CHECKER_TLS is off, selfsigned or custom, and is only honored in LAN mode. It uses PRICE_CHECKER_TLS_CERT and PRICE_CHECKER_TLS_KEY.
+* custom TLS is wired into the server and fails at startup if the files are missing.
+* selfsigned is accepted but refuses to start for now; it's planned for Phase 6.
+* PRICE_CHECKER_DATA_DIR sets where the database, secret_key file and certs live. Without it, the database stays where it was before (utils/), so the existing data is untouched.
+* LAN and public modes turn off tab-close shutdown, browser auto-open, the .env editor and dev tools.
+* Public mode adds ProxyFix, with PRICE_CHECKER_TRUSTED_PROXIES defaulting to 1. The session cookie is now HttpOnly, SameSite=Lax, and Secure when HTTPS applies.
+
+**Migrations**
+
+* utils/migrations.py tracks the schema version with PRAGMA user_version. You add a migration by appending to the MIGRATIONS list.
+* Version 1 is the old init_db logic, moved over as-is, and version 2 adds a users table.
+* Each step runs in its own transaction.
+* An existing database is backed up to a backups/ folder next to it before it changes.
+* A database from a newer version is refused.
+* init_db() in utils/database.py now calls migrate, and there is an admin_exists() helper.
+
+**Startup checks**
+
+* LAN and public modes refuse to start without a persistent secret of at least 32 characters, or without an enabled admin account.
+* They also refuse a selfsigned or incomplete custom TLS setup.
+* python main.py init-secret creates the secret file and never overwrites an existing one.
+* The checks run both from python main.py and when a production server imports main:app.
+* Confirmed LAN mode exits with a clear message when no admin exists. Because of that check, LAN and public modes can't start until Phase 3 adds create-admin.
+
+### Phase 2:
+
+**What changed**
+
+* Accounts: a users table (scrypt hashes, role, disabled flag, lockout fields), with helpers in utils/users.py.
+* Ownership: products, stores and scans carry a user_id. Stores are unique per user, so store numbers are unique per user.
+* Existing data: migration 3 assigns all existing rows to a placeholder local user. Local mode uses that user implicitly.
+* Scoping: every query in main.py, the scanner and the export code is scoped by user.
+* 404s: product and store routes now return 404 for rows you don't own or that don't exist. That replaces the old redirect with a message for missing rows.
+* Limits and scanning: MAX_URLS is per user, and each user has their own scan lock.
+* Admin-only settings: API keys, provider and usage counters are server-wide. Only admins see or change them.
+
+### Phase 3:
+
+**What was added**
+
+* Login and sessions: each login starts a fresh session with a new CSRF token. By default a session ends after 120 minutes of inactivity. "Keep me signed in" lasts 30 days and can be turned off with PRICE_CHECKER_REMEMBER_DAYS=0.
+* Sign-out everywhere: changing or resetting a password, or disabling an account, signs that user out on every device. The person changing their own password stays signed in.
+* Lockout and rate limiting: 5 failed logins lock an account for 15 minutes, and an address is limited to 20 failed logins per 15 minutes. Both limits are configurable. Failures all show the same message, so it doesn't reveal whether an account exists or is locked.
+* 429 and Retry-After: an address over its limit gets a 429. The Retry-After header is on by default and can be turned off with PRICE_CHECKER_RETRY_AFTER=0.
+* Registration: PRICE_CHECKER_REGISTRATION is admin (default, no sign-up page), invite (single-use links, hashed in the database, expiring) or open (limited to 10 attempts per address per hour).
+* Admin page (/admin/users): create users, change roles, disable or enable, reset passwords, and create or revoke invites. An admin can't change their own role or status.
+* Account page: users can change their own password, which requires the current one. (subject to change. Might do email password resets, security questions, or both.)
+* Password policy: 10 to 256 characters, and the password can't equal the username. There are no complexity rules for now. (Subject to change.)
+* CLI: python main.py create-admin [username] and python main.py reset-password [username]. Passwords are prompted without echo, or taken from PRICE_CHECKER_ADMIN_PASSWORD for scripted docker exec use. The first admin created adopts the existing watchlist.
+* Schema: migration 4 (schema version now 4) adds the session-invalidation counter, last-login time, an invites table and a login-attempts table.
+* Login required: outside local mode every page except sign-in and registration redirects to /login. Local mode is unchanged.
+* Test change: the old 401 test now expects a redirect to the login page.
