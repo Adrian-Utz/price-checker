@@ -1,0 +1,22 @@
+{% extends "auth_base.html" %}
+{% block title %}Create account - Price Checker{% endblock %}
+{% block content %}
+<section class="auth-card">
+	<h2>Create an account</h2>
+	{% if form_enabled %}
+	<form method="post" action="{{ url_for('register') }}">
+		<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+		{% if needs_invite %}<input type="hidden" name="invite" value="{{ invite }}">{% endif %}
+		<label for="username">Username</label>
+		<input id="username" name="username" type="text" autocomplete="username" minlength="3" maxlength="32" autofocus required>
+		<label for="password">Password</label>
+		<input id="password" name="password" type="password" autocomplete="new-password" minlength="10" required>
+		<label for="confirm_password">Repeat password</label>
+		<input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" minlength="10" required>
+		<button type="submit">Create account</button>
+	</form>
+	<p class="help">Usernames use letters, numbers, dot, dash or underscore. Passwords need at least 10 characters.</p>
+	{% endif %}
+	<p class="help"><a href="{{ url_for('login') }}">Back to sign in</a></p>
+</section>
+{% endblock %}

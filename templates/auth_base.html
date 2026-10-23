@@ -1,0 +1,28 @@
+<!doctype html>
+<!--
+Shared layout for the sign-in, registration, account and user-management pages.
+
+Last Update: 10/23/2026
+Written on: 10/23/2026
+Written by: AJ Utz
+-->
+<html lang="en">
+<head>
+	<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>{% block title %}Price Checker{% endblock %}</title>
+	<script>document.documentElement.dataset.theme = localStorage.getItem("price-checker-theme") || "default";</script>
+	<link rel="stylesheet" href="{{ url_for('static', filename='stylesheet.css') }}">
+</head>
+<body class="auth-page">
+	<header>
+		<div>
+			<p class="eyebrow">Personal price watchlist</p>
+			<div class="title-line"><h1>Price Checker</h1></div>
+		</div>
+		{% block header_links %}{% endblock %}
+	</header>
+	{% if message %}<p class="notice">{{ message }}</p>{% endif %}
+	{% if error %}<p class="notice error-notice" role="alert">{{ error }}</p>{% endif %}
+	{% block content %}{% endblock %}
+</body>
+</html>

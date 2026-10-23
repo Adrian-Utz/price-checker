@@ -1,0 +1,87 @@
+{% extends "auth_base.html" %}
+{% block title %}Users - Price Checker{% endblock %}
+{% block header_links %}
+<nav class="user-bar">
+	<a href="{{ url_for('index') }}">Watchlist</a>
+	<a href="{{ url_for('account') }}">Account</a>
+</nav>
+{% endblock %}
+{% block content %}
+{% if invite_url %}
+<section>
+	<h2>Invite link</h2>
+	<p class="help">Copy this link now. It is single-use and can't be shown again.</p>
+	<input class="invite-link" type="text" readonly value="{{ invite_url }}" onfocus="this.select()">
+</section>
+{% endif %}
+<section>
+	<h2>Users</h2>
+	{% for user in users %}
+	<div class="user-row">
+		<div class="user-name">
+			<strong>{{ user.username }}</strong>
+			<span class="status">{{ user.role }}</span>
+			{% if user.disabled %}<span class="status warning">disabled</span>{% endif %}
+			{% if user.locked_until and user.locked_until > now %}<span class="status warning">locked</span>{% endif %}
+			<span class="muted">{{ user.product_count }} of {{ max_urls }} products · last sign-in {{ user.last_login_at.replace('T', ' ')[:16] if user.last_login_at else 'never' }}</span>
+		</div>
+		<div class="user-actions">
+			{% if user.id != current_user_id %}
+			<form method="post" action="{{ url_for('admin_set_role', user_id=user.id) }}">
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				<select name="role" aria-label="Role for {{ user.username }}">
+					<option value="user" {{ 'selected' if user.role == 'user' }}>user</option>
+					<option value="admin" {{ 'selected' if user.role == 'admin' }}>admin</option>
+				</select>
+				<button type="submit">Set role</button>
+			</form>
+			<form method="post" action="{{ url_for('admin_set_status', user_id=user.id) }}">
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				<button type="submit" name="action" value="{{ 'enable' if user.disabled else 'disable' }}">{{ 'Enable' if user.disabled else 'Disable' }}</button>
+			</form>
+			{% endif %}
+			<form method="post" action="{{ url_for('admin_reset_password', user_id=user.id) }}">
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				<input name="password" type="password" autocomplete="new-password" minlength="10" placeholder="New password" aria-label="New password for {{ user.username }}" required>
+				<button type="submit">Reset password</button>
+			</form>
+		</div>
+	</div>
+	{% endfor %}
+</section>
+<section>
+	<h2>Create a user</h2>
+	<form method="post" action="{{ url_for('admin_create_user') }}">
+		<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+		<input name="username" type="text" placeholder="Username" aria-label="Username" minlength="3" maxlength="32" required>
+		<input name="password" type="password" autocomplete="new-password" placeholder="Password (10+ characters)" aria-label="Password" minlength="10" required>
+		<select name="role" aria-label="Role">
+			<option value="user">user</option>
+			<option value="admin">admin</option>
+		</select>
+		<button type="submit">Create user</button>
+	</form>
+</section>
+{% if registration == 'invite' %}
+<section>
+	<h2>Invite links</h2>
+	<form method="post" action="{{ url_for('admin_create_invite') }}">
+		<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+		<label for="invite-hours">Valid for (hours)</label>
+		<input id="invite-hours" name="hours" type="number" min="1" max="720" value="72" required>
+		<button type="submit">Create invite link</button>
+	</form>
+	{% for invite in invites %}
+	<div class="user-row">
+		<span class="muted">Created by {{ invite.created_by_name }} · expires {{ invite.expires_at.replace('T', ' ')[:16] }} UTC</span>
+		<form method="post" action="{{ url_for('admin_revoke_invite', invite_id=invite.id) }}">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			<button type="submit">Revoke</button>
+		</form>
+	</div>
+	{% endfor %}
+</section>
+{% elif registration == 'open' %}
+<p class="notice">Open sign-up is on: anyone who can reach this server can create an account.</p>
+{% endif %}
+{% endblock %}

@@ -19,6 +19,7 @@ Written by: AJ Utz
 
 def run_scan(
 	*,
+	user_id: int,
 	connect: ConnectionFactory,
 	utc_now: Callable[[], datetime],
 	developer_mode: bool,
@@ -27,7 +28,7 @@ def run_scan(
 	refresh_product: ProductRefresh,
 ) -> None:
 	"""
-	## Runs a full scan of all products in the database.
+	## Runs a full scan of one user's products.
 	This function initiates a scan, updates product details based on their latest observations,
 	and records observations for each product. It handles retries and ensures that only one URL is fetched
 	per second to avoid overwhelming the server.
@@ -36,8 +37,8 @@ def run_scan(
 
 	#insert a new row into the scans table with the start time and status
 	with connect() as connection:
-		scan_id = connection.execute("INSERT INTO scans (started_at, status) VALUES (?, ?)", (started, "running")).lastrowid
-		products = connection.execute("SELECT * FROM products ORDER BY id").fetchall() #Retrieve all products from the database
+		scan_id = connection.execute("INSERT INTO scans (user_id, started_at, status) VALUES (?, ?, ?)", (user_id, started, "running")).lastrowid
+		products = connection.execute("SELECT * FROM products WHERE user_id = ? ORDER BY id", (user_id,)).fetchall() #Retrieve this user's products
 	previous_fetch = 0.0 #initialize a variable to track the time between fetches
 
 	#Iterate over each product in the list
@@ -71,8 +72,8 @@ def refresh_product(
 		if product["source"] == "Lowes" and product["store_id"]:
 			with connect() as connection:
 				store = connection.execute(
-					"SELECT zip_state, zipcode FROM stores WHERE retailer = ? AND store_id = ?",
-					(product["source"], product["store_id"]),
+					"SELECT zip_state, zipcode FROM stores WHERE user_id = ? AND retailer = ? AND store_id = ?",
+					(product["user_id"], product["source"], product["store_id"]),
 				).fetchone()
 			if store:
 				zip_state, zipcode = store["zip_state"], store["zipcode"]
@@ -91,8 +92,8 @@ def refresh_product(
 	with connect() as connection:
 		if product["store_id"] and (result.get("store_name") or result.get("store_location")):
 			connection.execute(
-				"UPDATE stores SET name = COALESCE(?, name), location = COALESCE(?, location) WHERE retailer = ? AND store_id = ? AND (name = ? OR location = ?)",
-				(result.get("store_name"), result.get("store_location"), product["source"], product["store_id"], f"Store {product['store_id']}", "Location pending"),
+				"UPDATE stores SET name = COALESCE(?, name), location = COALESCE(?, location) WHERE user_id = ? AND retailer = ? AND store_id = ? AND (name = ? OR location = ?)",
+				(result.get("store_name"), result.get("store_location"), product["user_id"], product["source"], product["store_id"], f"Store {product['store_id']}", "Location pending"),
 			)
 		connection.execute("UPDATE products SET title = COALESCE(?, title), price = ?, bulk_price = ?, bulk_quantity = ?, currency = ?, checked_at = ?, error = ?, retailer_product_id = COALESCE(?, retailer_product_id) WHERE id = ?", (result.get("title"), result.get("price"), result.get("bulk_price"), result.get("bulk_quantity"), result.get("currency"), observed_at, error, result.get("product_id"), product["id"]))
 		connection.execute("INSERT INTO observations (product_id, price, bulk_price, currency, title, status, error, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (product["id"], result.get("price"), result.get("bulk_price"), result.get("currency"), result.get("title"), status, error, observed_at))
@@ -100,17 +101,19 @@ def refresh_product(
 
 def scan_allowed(
 	*,
+	user_id: int,
 	connect: ConnectionFactory,
 	developer_mode: bool,
 	local_calendar_date: Callable[[str], date],
 ) -> bool:
-	"""Check if the user is allowed to query the API's to check prices"""
+	"""Check if this user is allowed to query the API's to check prices"""
 	if developer_mode:
 		return True
 	#Connect to the database using the connect function
 	with connect() as connection:
-		#Execute a SQL query to select the latest completed data
-		# The quety orders the scans by their ID in descending order and limits the results to 1
-		scan = connection.execute("SELECT completed_at FROM scans WHERE status = 'completed' ORDER BY id DESC LIMIT 1").fetchone()
+		#Select this user's latest completed scan
+		scan = connection.execute(
+			"SELECT completed_at FROM scans WHERE user_id = ? AND status = 'completed' ORDER BY id DESC LIMIT 1", (user_id,)
+		).fetchone()
 	#Check if there is no scan or if the scan's completed date is not today
 	return not scan or local_calendar_date(scan["completed_at"]) != datetime.now().astimezone().date()

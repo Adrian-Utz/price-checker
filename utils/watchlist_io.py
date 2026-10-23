@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from api_clients.unwrangle_client import product_reference as unwrangle_product_reference
+from utils.migrations import LATEST_VERSION
 from utils.providers import ITEM_PROVIDERS
 
 """
@@ -34,9 +35,9 @@ def source_for(url: str) -> str:
 	return host
 
 
-def watchlist_export_rows(connection: sqlite3.Connection) -> list[dict[str, object]]:
-	"""Read watchlist products and price history into export-ready rows."""
-	products = connection.execute("SELECT * FROM products ORDER BY id").fetchall()
+def watchlist_export_rows(connection: sqlite3.Connection, user_id: int) -> list[dict[str, object]]:
+	"""Read one user's watchlist products and price history into export-ready rows."""
+	products = connection.execute("SELECT * FROM products WHERE user_id = ? ORDER BY id", (user_id,)).fetchall()
 	rows = []
 	for product in products:
 		host = urlparse(product["url"]).netloc.lower().removeprefix("www.")
@@ -78,10 +79,13 @@ def validate_watchlist_database(path: Path) -> None:
 	connection = sqlite3.connect(path)
 	try:
 		tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+		version = connection.execute("PRAGMA user_version").fetchone()[0]
 	finally:
 		connection.close()
 	if "products" not in tables:
 		raise ValueError("That database does not contain a 'products' table.")
+	if version > LATEST_VERSION:
+		raise ValueError("That database was made by a newer version of Price Checker.")
 
 
 def parse_watchlist_json(text: str) -> list[dict[str, object]]:

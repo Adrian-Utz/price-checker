@@ -43,7 +43,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from urllib.parse import unquote, urlparse
 from werkzeug.serving import make_server
-from flask import Flask, Response, abort, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, Response, abort, g, redirect, render_template, request, send_file, session, url_for
 
 from version import VERSION_NUMBER
 from api_clients.serpapi_client import SerpApiClient, product_bulk_price as serpapi_bulk_price, product_candidates, product_price as serpapi_product_price
@@ -61,11 +61,15 @@ from utils.watchlist_io import (
 from utils.database import (
 	DATABASE_PATH,
 	DEV_DATABASE_PATH,
+	admin_exists,
 	connect,
 	connect_dev,
 	init_db,
 	init_dev_db,
 )
+from utils.config import ConfigError, create_secret_file, load_settings, startup_errors
+from utils.users import claim_local_data, create_user, get_user, local_user_id, real_user_count
+from utils import auth
 from utils.scanner import (
 	refresh_product as _refresh_product,
 	run_scan as _run_scan,
@@ -95,15 +99,25 @@ Written by: AJ Utz
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE, override=True)
-DEVELOPER_MODE = os.environ.get("PRICE_CHECKER_DEVELOPER_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+try:
+	SETTINGS = load_settings()
+except ConfigError as error:
+	raise SystemExit(f"Configuration error: {error}")
+DEVELOPER_MODE = SETTINGS.allow_dev_tools
 MAX_URLS = max(20, min(int(os.environ.get("PRICE_CHECKER_MAX_URLS", "100")), 100)) #Change this variable if you want to track more items.
 CACHE_HOURS = max(1, int(os.environ.get("PRICE_CHECKER_CACHE_HOURS", "24")))
 MIN_DELAY_SECONDS = max(1.0, float(os.environ.get("PRICE_CHECKER_MIN_DELAY", "4")))
 MAX_FULL_CHART_WIDTH = 2400
 DEFAULT_CHART_RANGE_DAYS = 30
 API_USAGE_CACHE_SECONDS = 300
+REGISTER_IP_LIMIT = 10 #Sign-up attempts allowed per address per hour
+REGISTER_WINDOW_SECONDS = 3600
 app = Flask(__name__)
-app.secret_key = os.environ.get("PRICE_CHECKER_SECRET", secrets.token_hex(32))
+app.secret_key = SETTINGS.secret or secrets.token_hex(32) #Only local mode may fall back to a per-run secret
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = SETTINGS.secure_cookies
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=max(SETTINGS.remember_days, 1))
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024 #Cap uploaded database files at 64 MB
 server = None
 shutdown_lock = threading.Lock()
@@ -111,6 +125,8 @@ shutdown_timer = None
 update_info = {"available": False, "latest_version": None}
 update_info_lock = threading.Lock()
 api_usage_lock = threading.Lock()
+user_scan_locks: dict[int, threading.Lock] = {}
+user_scan_locks_guard = threading.Lock()
 api_usage = {
 	"serpapi_remaining": None,
 	"serpapi_monthly_limit": None,
@@ -121,8 +137,8 @@ api_usage = {
 serpapi_usage_checked_at = 0.0
 
 # Sharing variable for group testing with Live Share
-auto_server_shutdown = True #This variable turns off the automatic server shutdown whenever a user closes a tab
-edit_env = True #This varaible turns off the ability to edit the .env file 
+auto_server_shutdown = SETTINGS.auto_shutdown #This variable turns off the automatic server shutdown whenever a user closes a tab
+edit_env = SETTINGS.allow_env_editor #This varaible turns off the ability to edit the .env file 
 
 
 def check_for_update_background() -> None:
@@ -432,6 +448,25 @@ def protect_post_forms() -> None:
 		if not secrets.compare_digest(submitted, session["csrf_token"]):
 			abort(400, description="Invalid form token.")
 
+
+PUBLIC_ENDPOINTS = {"login", "register", "static"}
+
+
+@app.before_request
+def require_login():
+	"""Outside local mode every page except sign-in and registration needs a logged-in session."""
+	if SETTINGS.is_local or request.endpoint is None or request.endpoint in PUBLIC_ENDPOINTS:
+		return None
+	if signed_in_user() is None:
+		abort(401)
+	return None
+
+
+@app.errorhandler(401)
+def not_signed_in(error):
+	next_url = request.full_path.rstrip("?") if request.method == "GET" else None
+	return redirect(url_for("login", next=next_url) if next_url and next_url != "/" else url_for("login"))
+
 """Check if the page is closed then stop local server."""
 def cancel_pending_shutdown() -> None:
 	global shutdown_timer
@@ -456,8 +491,9 @@ def schedule_shutdown() -> None:
 		shutdown_timer.start()
 
 
-def run_scan() -> None:
+def run_scan(user_id: int) -> None:
 	_run_scan(
+		user_id=user_id,
 		connect=connect,
 		utc_now=utc_now,
 		developer_mode=DEVELOPER_MODE,
@@ -476,22 +512,330 @@ def refresh_product(product: sqlite3.Row) -> None:
 	)
 
 
-def scan_allowed() -> bool:
+def scan_allowed(user_id: int) -> bool:
 	return _scan_allowed(
+		user_id=user_id,
 		connect=connect,
 		developer_mode=DEVELOPER_MODE,
 		local_calendar_date=local_calendar_date,
 	)
 
 
+def scan_lock_for(user_id: int) -> threading.Lock:
+	"""One lock per user: a user can't run two scans (and spend API credits twice) at once, but users don't block each other."""
+	with user_scan_locks_guard:
+		return user_scan_locks.setdefault(user_id, threading.Lock())
+
+
+def session_expired() -> bool:
+	"""Remembered sessions last a fixed number of days; ordinary ones end after a period of inactivity."""
+	now = time.time()
+	if session.get("remember"):
+		return now - session.get("issued", 0) > SETTINGS.remember_days * 86400
+	return now - session.get("last_seen", 0) > SETTINGS.session_idle_minutes * 60
+
+
+def signed_in_user() -> sqlite3.Row | None:
+	"""The logged-in user, or None. A session dies on timeout, password reset, or when the account is disabled."""
+	if "current_user" in g:
+		return g.current_user
+	with connect() as connection:
+		if SETTINGS.is_local:
+			user = get_user(connection, local_user_id(connection))
+		else:
+			session_user_id = session.get("user_id")
+			user = get_user(connection, session_user_id) if isinstance(session_user_id, int) else None
+			if user is not None and (session_expired() or session.get("sv") != user["session_version"]):
+				user = None
+			if user is None and "user_id" in session:
+				end_session()
+			elif user is not None:
+				session["last_seen"] = int(time.time())
+	if user is None or user["disabled"]:
+		return None
+	g.current_user = user
+	return user
+
+
+def current_user() -> sqlite3.Row:
+	"""Return the signed-in user. Local mode always acts as the implicit local user; other modes need a session login."""
+	user = signed_in_user()
+	if user is None:
+		abort(401)
+	return user
+
+
+def current_user_id() -> int:
+	return current_user()["id"]
+
+
+def is_admin() -> bool:
+	return current_user()["role"] == "admin"
+
+
+def require_admin() -> None:
+	if not is_admin():
+		abort(403, description="Only an administrator can do that.")
+
+
+def owned_product(connection: sqlite3.Connection, product_id: int) -> sqlite3.Row:
+	"""Fetch a product only if the current user owns it. Missing and not-yours look identical (404)."""
+	product = connection.execute(
+		"SELECT * FROM products WHERE id = ? AND user_id = ?", (product_id, current_user_id())
+	).fetchone()
+	if product is None:
+		abort(404, description="Product was not found.")
+	return product
+
+
+def require_accounts() -> None:
+	"""Login, registration and user management only exist when accounts are enabled."""
+	if SETTINGS.is_local:
+		abort(404)
+
+
+def client_ip() -> str:
+	return request.remote_addr or "unknown"
+
+
+def safe_next_url(target: str | None) -> str:
+	"""Only follow same-site relative paths after login, never an external address."""
+	if target and target.startswith("/") and not target.startswith("//") and "\\" not in target:
+		parsed = urlparse(target)
+		if not parsed.scheme and not parsed.netloc:
+			return target
+	return url_for("index")
+
+
+def end_session() -> None:
+	session.clear()
+	session["csrf_token"] = secrets.token_urlsafe(32)
+
+
+def start_session(user: sqlite3.Row, remember: bool) -> None:
+	"""Begin a fresh session (and a new CSRF token) so nothing from before the login carries over."""
+	remember = remember and SETTINGS.remember_days > 0
+	end_session()
+	now = int(time.time())
+	session["user_id"] = user["id"]
+	session["sv"] = user["session_version"]
+	session["issued"] = now
+	session["last_seen"] = now
+	session["remember"] = remember
+	session.permanent = remember
+
+
+def rate_limited_response(template: str, retry_after: int, **context):
+	response = Response(render_template(template, csrf_token=session["csrf_token"], error="Too many attempts. Try again later.", **context), status=429)
+	if SETTINGS.retry_after_header:
+		response.headers["Retry-After"] = str(retry_after)
+	return response
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+	require_accounts()
+	next_url = request.values.get("next", "")
+	context = {"next_url": next_url, "message": request.args.get("message"), "registration": SETTINGS.registration, "remember_enabled": SETTINGS.remember_days > 0}
+	if request.method == "GET":
+		if signed_in_user() is not None:
+			return redirect(safe_next_url(next_url))
+		return render_template("login.html", csrf_token=session["csrf_token"], error=None, **context)
+	ip = client_ip()
+	with connect() as connection:
+		wait = auth.retry_after_seconds(connection, ip, "login", SETTINGS.login_ip_limit)
+	if wait:
+		return rate_limited_response("login.html", wait, **context)
+	with connect() as connection:
+		user = auth.authenticate(
+			connection, request.form.get("username", ""), request.form.get("password", ""),
+			max_failures=SETTINGS.login_max_failures, lockout_minutes=SETTINGS.login_lockout_minutes,
+		)
+		if user is None:
+			auth.record_attempt(connection, ip, "login")
+	if user is None:
+		error = "Invalid username or password, or the account is temporarily locked."
+		return render_template("login.html", csrf_token=session["csrf_token"], error=error, **context), 401
+	start_session(user, request.form.get("remember") == "on")
+	return redirect(safe_next_url(next_url))
+
+
+@app.post("/logout")
+def logout():
+	require_accounts()
+	end_session()
+	return redirect(url_for("login", message="You have been signed out."))
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+	require_accounts()
+	if SETTINGS.registration == "admin":
+		abort(404)
+	needs_invite = SETTINGS.registration == "invite"
+	token = request.values.get("invite", "") if needs_invite else ""
+	context = {"invite": token, "needs_invite": needs_invite}
+	if request.method == "GET":
+		with connect() as connection:
+			invite_ok = not needs_invite or auth.find_invite(connection, token) is not None
+		error = None if invite_ok else "This invite link is invalid or has expired."
+		return render_template("register.html", csrf_token=session["csrf_token"], error=error, form_enabled=invite_ok, **context), (200 if invite_ok else 404)
+	ip = client_ip()
+	with connect() as connection:
+		wait = auth.retry_after_seconds(connection, ip, "register", REGISTER_IP_LIMIT, REGISTER_WINDOW_SECONDS)
+		if not wait:
+			auth.record_attempt(connection, ip, "register")
+	if wait:
+		return rate_limited_response("register.html", wait, form_enabled=True, **context)
+	username = request.form.get("username", "").strip()
+	password = request.form.get("password", "")
+	error = None
+	if password != request.form.get("confirm_password", ""):
+		error = "The passwords don't match."
+	else:
+		try:
+			with connect() as connection:
+				if needs_invite:
+					auth.accept_invite(connection, token, username, password)
+				else:
+					create_user(connection, username, password, "user")
+		except ValueError as problem:
+			error = str(problem)
+	if error:
+		return render_template("register.html", csrf_token=session["csrf_token"], error=error, form_enabled=True, **context), 400
+	return redirect(url_for("login", message="Account created. You can sign in now."))
+
+
+@app.get("/account")
+def account():
+	require_accounts()
+	user = current_user()
+	return render_template("account.html", csrf_token=session["csrf_token"], username=user["username"], is_admin=is_admin(), message=request.args.get("message"), error=None)
+
+
+@app.post("/account/password")
+def change_own_password():
+	require_accounts()
+	user = current_user()
+	new_password = request.form.get("new_password", "")
+	error = None
+	if new_password != request.form.get("confirm_password", ""):
+		error = "The new passwords don't match."
+	else:
+		try:
+			with connect() as connection:
+				verified = auth.authenticate(
+					connection, user["username"], request.form.get("current_password", ""),
+					max_failures=SETTINGS.login_max_failures, lockout_minutes=SETTINGS.login_lockout_minutes,
+				)
+				if verified is None:
+					error = "The current password is incorrect."
+				else:
+					auth.set_password(connection, user["id"], new_password)
+					updated = get_user(connection, user["id"])
+		except ValueError as problem:
+			error = str(problem)
+	if error:
+		return render_template("account.html", csrf_token=session["csrf_token"], username=user["username"], is_admin=is_admin(), message=None, error=error), 400
+	session["sv"] = updated["session_version"] #Keep this session, sign every other one out
+	return redirect(url_for("account", message="Password changed. Other devices were signed out."))
+
+
+def render_admin_users(message: str | None = None, error: str | None = None, invite_url: str | None = None, status: int = 200):
+	with connect() as connection:
+		users = auth.list_users(connection)
+		invites = auth.list_invites(connection) if SETTINGS.registration == "invite" else []
+	return render_template(
+		"admin_users.html", csrf_token=session["csrf_token"], users=users, invites=invites, invite_url=invite_url,
+		registration=SETTINGS.registration, current_user_id=current_user_id(), message=message, error=error,
+		max_urls=MAX_URLS, now=auth.utc_text(),
+	), status
+
+
+def admin_action(action, success_message: str):
+	"""Run an admin change; a refused change (bad input, self-edit) is reported instead of crashing."""
+	require_accounts()
+	require_admin()
+	try:
+		with connect() as connection:
+			action(connection)
+	except ValueError as problem:
+		return render_admin_users(error=str(problem), status=400)
+	return redirect(url_for("admin_users", message=success_message))
+
+
+@app.get("/admin/users")
+def admin_users():
+	require_accounts()
+	require_admin()
+	return render_admin_users(message=request.args.get("message"))
+
+
+@app.post("/admin/users/create")
+def admin_create_user():
+	return admin_action(
+		lambda connection: create_user(
+			connection, request.form.get("username", ""), request.form.get("password", ""),
+			request.form.get("role", "user"),
+		),
+		"Account created.",
+	)
+
+
+@app.post("/admin/users/<int:user_id>/role")
+def admin_set_role(user_id: int):
+	return admin_action(
+		lambda connection: auth.set_role(connection, current_user_id(), user_id, request.form.get("role", "")),
+		"Role updated.",
+	)
+
+
+@app.post("/admin/users/<int:user_id>/status")
+def admin_set_status(user_id: int):
+	disable = request.form.get("action") == "disable"
+	return admin_action(
+		lambda connection: auth.set_disabled(connection, current_user_id(), user_id, disable),
+		"Account disabled and signed out." if disable else "Account enabled.",
+	)
+
+
+@app.post("/admin/users/<int:user_id>/password")
+def admin_reset_password(user_id: int):
+	return admin_action(
+		lambda connection: auth.set_password(connection, user_id, request.form.get("password", "")),
+		"Password reset. The user was signed out everywhere.",
+	)
+
+
+@app.post("/admin/invites/create")
+def admin_create_invite():
+	require_accounts()
+	require_admin()
+	if SETTINGS.registration != "invite":
+		abort(404)
+	try:
+		hours = int(request.form.get("hours", "72"))
+		with connect() as connection:
+			token = auth.create_invite(connection, current_user_id(), hours)
+	except ValueError as problem:
+		return render_admin_users(error=str(problem), status=400)
+	return render_admin_users(invite_url=url_for("register", invite=token, _external=True))
+
+
+@app.post("/admin/invites/<int:invite_id>/revoke")
+def admin_revoke_invite(invite_id: int):
+	return admin_action(lambda connection: auth.revoke_invite(connection, invite_id), "Invite revoked.")
+
+
 @app.route("/", methods=["GET"])
 def index():
 	"""Run the program in the user's prefered web browser"""
+	user_id = current_user_id()
 	#Connect to the database using the connect function
 	with connect() as connection:
-		#Execute a SQL query to retrieve all products and order them by their ID
-		product_rows = connection.execute("SELECT * FROM products ORDER BY id").fetchall()
-		store_rows = connection.execute("SELECT * FROM stores ORDER BY retailer, name, store_id").fetchall()
+		#Execute a SQL query to retrieve this user's products and order them by their ID
+		product_rows = connection.execute("SELECT * FROM products WHERE user_id = ? ORDER BY id", (user_id,)).fetchall()
+		store_rows = connection.execute("SELECT * FROM stores WHERE user_id = ? ORDER BY retailer, name, store_id", (user_id,)).fetchall()
 		stores_by_retailer = {}
 		for store in store_rows:
 			stores_by_retailer.setdefault(store["retailer"], []).append(dict(store))
@@ -525,8 +869,10 @@ def index():
 				for row in reversed(history)
 			]
 			products.append(product_view)#Append the product view to the porduct list
-		#Retrieve the latest completed scan
-		scan = connection.execute("SELECT completed_at FROM scans WHERE status = 'completed' ORDER BY id DESC LIMIT 1").fetchone()
+		#Retrieve this user's latest completed scan
+		scan = connection.execute(
+			"SELECT completed_at FROM scans WHERE user_id = ? AND status = 'completed' ORDER BY id DESC LIMIT 1", (user_id,)
+		).fetchone()
 	#extract the last scan's completed date and format it to "YYYY-MM-DD HH:MM"
 	last_scan = scan["completed_at"].replace("T", " ")[:16] if scan else None
 	with update_info_lock:
@@ -538,10 +884,13 @@ def index():
 		products=products, 
 		stores_by_retailer=stores_by_retailer, 
 		max_urls=MAX_URLS, 
-		can_scan=scan_allowed(), 
+		can_scan=scan_allowed(user_id), 
 		last_scan=last_scan, 
 		message=request.args.get("message"), 
 		csrf_token=session["csrf_token"], 
+		is_admin=is_admin(),
+		current_username=current_user()["username"],
+		accounts_enabled=not SETTINGS.is_local,
 		serpapi_ready=serpapi_ready(), 
 		unwrangle_ready=unwrangle_ready(), 
 		apify_ready=apify_ready(),
@@ -554,7 +903,8 @@ def index():
 		update_available=update_available, 
 		latest_version=latest_version, 
 		releases_url=check_for_update.get_latest_release_url(),
-		api_usage=api_usage_summary(),
+		api_usage=api_usage_summary() if is_admin() else None,
+		allow_database_files=SETTINGS.is_local,
 		providers_for_retailer=providers_for_retailer,
 	)
 
@@ -617,6 +967,7 @@ def replay_dev_response_route(response_id: int):
 def chart_window(product_id: int):
 	"""Return a selected time range for an interactive history chart."""
 	with connect() as connection:
+		owned_product(connection, product_id)
 		history = connection.execute(
 			"SELECT price, bulk_price, observed_at FROM observations WHERE product_id = ? AND status = 'success' AND price IS NOT NULL ORDER BY observed_at",
 			(product_id,),
@@ -642,16 +993,17 @@ def chart_window(product_id: int):
 @app.post("/add")
 def add_url():
 	"""Add a url to the database"""
+	user_id = current_user_id()
 	try:
 		normalized = normalize_url(request.form.get("url", ""))#Normilize the URl
 		with connect() as connection: #Connect to the database
-			#Check if the number of products in the database exceeds the max limit
-			if connection.execute("SELECT COUNT(*) FROM products").fetchone()[0] >= MAX_URLS:
+			#Check if this user's number of products exceeds the max limit
+			if connection.execute("SELECT COUNT(*) FROM products WHERE user_id = ?", (user_id,)).fetchone()[0] >= MAX_URLS:
 				raise ValueError(f"The watchlist limit is {MAX_URLS} URLs.")
-			duplicate_exists = connection.execute("SELECT 1 FROM products WHERE url = ? LIMIT 1", (normalized,)).fetchone()
+			duplicate_exists = connection.execute("SELECT 1 FROM products WHERE user_id = ? AND url = ? LIMIT 1", (user_id, normalized)).fetchone()
 			if duplicate_exists and request.form.get("allow_duplicate") != "on":
 				return redirect(url_for("index", message="That URL is already tracked. Check 'Track another store' to add it again."))
-			connection.execute("INSERT INTO products (url, source) VALUES (?, ?)", (normalized, source_for(normalized)))
+			connection.execute("INSERT INTO products (user_id, url, source) VALUES (?, ?, ?)", (user_id, normalized, source_for(normalized)))
 		#Set message based on whether a duplicate was explicitly allowed
 		message = "URL added as another store." if duplicate_exists else "URL added."
 	except ValueError as error:
@@ -665,14 +1017,12 @@ def set_store(product_id: int):
 	"""Set the store number so you can search a specific store."""
 	store_id = request.form.get("store_id", "").strip()
 	with connect() as connection:
-		product = connection.execute("SELECT source FROM products WHERE id = ?", (product_id,)).fetchone()
-		if product is None:
-			return redirect(url_for("index", message="Product was not found."))
+		product = owned_product(connection, product_id)
 		if store_id and not connection.execute(
-			"SELECT 1 FROM stores WHERE store_id = ? AND retailer = ?", (store_id, product["source"])
+			"SELECT 1 FROM stores WHERE user_id = ? AND store_id = ? AND retailer = ?", (current_user_id(), store_id, product["source"])
 		).fetchone():
 			return redirect(url_for("index", message="Choose a saved store for this retailer."))
-		connection.execute("UPDATE products SET store_id = ? WHERE id = ?", (store_id or None, product_id))
+		connection.execute("UPDATE products SET store_id = ? WHERE id = ? AND user_id = ?", (store_id or None, product_id, current_user_id()))
 	return redirect(url_for("index", message="Store selection updated."))
 
 
@@ -681,12 +1031,10 @@ def set_item_provider(product_id: int):
 	"""Pin one item to a specific API provider, or clear the pin to follow the global provider."""
 	provider = request.form.get("provider", "").strip().lower()
 	with connect() as connection:
-		product = connection.execute("SELECT source FROM products WHERE id = ?", (product_id,)).fetchone()
-		if product is None:
-			return redirect(url_for("index", message="Product was not found."))
+		product = owned_product(connection, product_id)
 		if provider and (provider not in ITEM_PROVIDERS or provider not in providers_for_retailer(product["source"])):
 			return redirect(url_for("index", message=f"That API provider does not support {product['source']}."))
-		connection.execute("UPDATE products SET api_provider = ? WHERE id = ?", (provider or None, product_id))
+		connection.execute("UPDATE products SET api_provider = ? WHERE id = ? AND user_id = ?", (provider or None, product_id, current_user_id()))
 	message = f"This item will always use {provider}." if provider else "This item now follows the global API provider."
 	return redirect(url_for("index", message=message))
 
@@ -713,17 +1061,18 @@ def add_store():
 	# Show Location pending until the search. 
 	location = location or "Location pending"
 	# Then once the search is run, check the search responce for the store name.
+	user_id = current_user_id()
 	with connect() as connection:
 		try:
 			connection.execute(
-				"INSERT INTO stores (retailer, store_id, name, location, zip_state, zipcode) VALUES (?, ?, ?, ?, ?, ?)",
-				(retailer, store_id, name, location, zip_state or None, zipcode or None),
+				"INSERT INTO stores (user_id, retailer, store_id, name, location, zip_state, zipcode) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				(user_id, retailer, store_id, name, location, zip_state or None, zipcode or None),
 			)
 		except sqlite3.IntegrityError:
 			if retailer == "Lowes":
 				connection.execute(
-					"UPDATE stores SET zip_state = ?, zipcode = ? WHERE retailer = ? AND store_id = ?",
-					(zip_state, zipcode, retailer, store_id),
+					"UPDATE stores SET zip_state = ?, zipcode = ? WHERE user_id = ? AND retailer = ? AND store_id = ?",
+					(zip_state, zipcode, user_id, retailer, store_id),
 				)
 				return redirect(url_for("index", message="Lowes store ZIP code/state updated."))
 			return redirect(url_for("index", message="That store is already saved for this retailer."))
@@ -733,17 +1082,18 @@ def add_store():
 @app.post("/stores/<int:store_record_id>/remove")
 def remove_store(store_record_id: int):
 	"""Remove a saved store and reset products assigned to it to all stores."""
+	user_id = current_user_id()
 	with connect() as connection:
 		store = connection.execute(
-			"SELECT retailer, store_id FROM stores WHERE id = ?", (store_record_id,)
+			"SELECT retailer, store_id FROM stores WHERE id = ? AND user_id = ?", (store_record_id, user_id)
 		).fetchone()
 		if store is None:
-			return redirect(url_for("index", message="Saved store was not found."))
+			abort(404, description="Saved store was not found.")
 		connection.execute(
-			"UPDATE products SET store_id = NULL WHERE source = ? AND store_id = ?",
-			(store["retailer"], store["store_id"]),
+			"UPDATE products SET store_id = NULL WHERE user_id = ? AND source = ? AND store_id = ?",
+			(user_id, store["retailer"], store["store_id"]),
 		)
-		connection.execute("DELETE FROM stores WHERE id = ?", (store_record_id,))
+		connection.execute("DELETE FROM stores WHERE id = ? AND user_id = ?", (store_record_id, user_id))
 	return redirect(url_for("index", message="Saved store removed; assigned products now use all stores."))
 
 
@@ -751,7 +1101,8 @@ def remove_store(store_record_id: int):
 def remove_url(product_id: int):
 	"""Endpoint to remove a product from the database based on product ID"""
 	with connect() as connection:
-		connection.execute("DELETE FROM products WHERE id = ?", (product_id,))
+		owned_product(connection, product_id)
+		connection.execute("DELETE FROM products WHERE id = ? AND user_id = ?", (product_id, current_user_id()))
 	return redirect(url_for("index", message="URL removed."))
 
 
@@ -759,49 +1110,74 @@ def remove_url(product_id: int):
 def recheck_url(product_id: int):
 	"""Re-fetch a single product's price, ignoring the daily scan limit and freshness cache."""
 	with connect() as connection:
-		product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
-	if product is None:
-		return redirect(url_for("index", message="Product was not found."))
+		product = owned_product(connection, product_id)
+
 	if not DEVELOPER_MODE and not product["error"]:
 		return redirect(url_for("index", message="Re-check is only available for items whose last check failed."))
+
 	refresh_product(product)
+
 	return redirect(url_for("index", message="Re-checked that item."))
 
 
 @app.post("/recheck-selected")
 def recheck_selected():
 	"""Re-fetch only the checked products, ignoring the daily scan limit and freshness cache."""
+	user_id = current_user_id()
 	selected_ids = sorted({int(value) for value in request.form.getlist("product_ids") if value.isdigit()})
+
 	if not selected_ids:
 		return redirect(url_for("index", message="Select at least one item to re-check."))
+
 	placeholders = ",".join("?" * len(selected_ids))
-	with connect() as connection:
-		products = connection.execute(f"SELECT * FROM products WHERE id IN ({placeholders}) ORDER BY id", selected_ids).fetchall()
-	previous_fetch = 0.0
-	for product in products:
-		#Keep the same pacing as a full scan so a large selection doesn't hammer the APIs
-		if previous_fetch:
-			time.sleep(max(0, MIN_DELAY_SECONDS + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
-		previous_fetch = time.monotonic()
-		refresh_product(product)
+
+	lock = scan_lock_for(user_id)
+	if not lock.acquire(blocking=False):
+		return redirect(url_for("index", message="A check is already running for your account."))
+	try:
+		with connect() as connection:
+			products = connection.execute(
+				f"SELECT * FROM products WHERE user_id = ? AND id IN ({placeholders}) ORDER BY id", [user_id, *selected_ids]
+			).fetchall()
+
+		previous_fetch = 0.0
+
+		for product in products:
+			#Keep the same pacing as a full scan so a large selection doesn't hammer the APIs
+			if previous_fetch:
+				time.sleep(max(0, MIN_DELAY_SECONDS + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
+			previous_fetch = time.monotonic()
+			refresh_product(product)
+	finally:
+		lock.release()
 	return redirect(url_for("index", message=f"Re-checked {len(products)} selected item{'s' if len(products) != 1 else ''}."))
 
 
 @app.post("/scan")
 def scan():
 	"""Check if a scan is allowed for the user, if so run the scan"""
-	if not scan_allowed():
-		return redirect(url_for("index", message="Only one completed scan is allowed per day."))
-	run_scan()
+	user_id = current_user_id()
+	lock = scan_lock_for(user_id)
+	if not lock.acquire(blocking=False):
+		return redirect(url_for("index", message="A scan is already running for your account."))
+	try:
+		if not scan_allowed(user_id):
+			return redirect(url_for("index", message="Only one completed scan is allowed per day."))
+		run_scan(user_id)
+	finally:
+		lock.release()
+
 	return redirect(url_for("index", message="Scan complete."))
 
 
 @app.get("/export/json")
 def export_watchlist_json():
-	"""Export SQL database as a json file"""
+	"""Export the current user's watchlist as a json file"""
 	with connect() as connection:
-		products = watchlist_export_rows(connection)
+		products = watchlist_export_rows(connection, current_user_id())
+
 	content = json.dumps({"products": products}, indent=2)
+
 	return Response(
 		content,
 		mimetype="application/json",
@@ -811,17 +1187,20 @@ def export_watchlist_json():
 
 @app.get("/export/csv")
 def export_watchlist_csv():
-	"""Export SQL database as a csv file"""
+	"""Export the current user's watchlist as a csv file"""
 	with connect() as connection:
-		products = watchlist_export_rows(connection)
+		products = watchlist_export_rows(connection, current_user_id())
+
 	output = io.StringIO(newline="")
 	fieldnames = ["id", "product_id", "url", "title", "source", "price", "bulk_price", "bulk_quantity", "currency", "checked_at", "error", "api_provider", "history"]
 	writer = csv.DictWriter(output, fieldnames=fieldnames)
 	writer.writeheader()
+
 	for product in products:
 		row = {field: product[field] for field in fieldnames if field != "history"}
 		row["history"] = json.dumps(product["history"], separators=(",", ":"))
 		writer.writerow(row)
+
 	return Response(
 		output.getvalue(),
 		mimetype="text/csv",
@@ -832,6 +1211,7 @@ def export_watchlist_csv():
 @app.get("/export/db")
 def export_watchlist_db():
 	"""Export the raw SQLite database file so it can be imported again later, on this machine or another."""
+	require_whole_database_access()
 	with connect() as connection:
 		connection.execute("PRAGMA wal_checkpoint(FULL)") #Flush any pending writes into the main file before copying it
 	return send_file(DATABASE_PATH, as_attachment=True, download_name="price-checker-watchlist.sqlite3", mimetype="application/vnd.sqlite3")
@@ -840,11 +1220,15 @@ def export_watchlist_db():
 @app.post("/import/db")
 def import_watchlist_db():
 	"""Replace the active database with an uploaded SQLite/CSV/JSON file, keeping a backup of the previous one."""
+	require_whole_database_access()
 	uploaded = request.files.get("database_file")
+
 	if uploaded is None or not uploaded.filename:
 		return redirect(url_for("index", message="Choose a database file to import."))
+
 	filename = uploaded.filename.lower()
 	temp_path = DATABASE_PATH.with_suffix(".upload.tmp")
+
 	try:
 		if filename.endswith((".sqlite3", ".sqlite", ".db")):
 			uploaded.save(temp_path)
@@ -861,7 +1245,9 @@ def import_watchlist_db():
 	except (ValueError, OSError) as error:
 		temp_path.unlink(missing_ok=True)
 		return redirect(url_for("index", message=f"Could not import database: {error}"))
+
 	init_db()
+
 	return redirect(url_for("index", message="Database imported. The previous database was backed up."))
 
 
@@ -874,9 +1260,17 @@ def shutdown():
 	return ("", 204)
 
 
+def require_whole_database_access() -> None:
+	"""Raw database export/import covers every user's data, so it only exists in local mode until per-user import (Phase 4)."""
+	current_user_id()
+	if not SETTINGS.is_local:
+		abort(403, description="Whole-database export and import are disabled when accounts are enabled.")
+
+
 @app.post("/settings/provider")
 def set_api_provider():
-	"""Let the user choose which API provider fetch_product() should prefer."""
+	"""Let the admin choose which API provider fetch_product() should prefer."""
+	require_admin()
 	provider = request.form.get("provider", "").strip().lower()
 	if provider not in API_PROVIDERS:
 		return redirect(url_for("index", message="Choose a valid API provider."))
@@ -888,6 +1282,7 @@ def set_api_provider():
 @app.post("/settings/env")
 def save_env_file():
 	"""Update the user's .env"""
+	require_admin()
 	if not edit_env:
 		abort(403, description="Editing the .env file is disabled.")
 	try:
@@ -912,20 +1307,95 @@ def app_url(host: str, port: int) -> str:
 	if configured_scheme:
 		scheme = configured_scheme.strip().lower()
 	else:
-		# Local Flask development does not serve TLS by default, so localhost URLs stay on HTTP.
-		scheme = "http" if host in {"127.0.0.1", "localhost"} else "https"
+		scheme = SETTINGS.scheme
 	return f"{scheme}://{host}:{port}"
+
+
+def enforce_startup_requirements() -> None:
+	"""Exit instead of serving LAN or public mode without a persistent secret and an admin account."""
+	errors = startup_errors(SETTINGS, admin_exists())
+	if errors:
+		raise SystemExit(f"Cannot start in {SETTINGS.mode} mode:\n- " + "\n- ".join(errors))
+
+
+def read_new_password(prompt: str = "New password") -> str:
+	"""Prompt twice without echo. PRICE_CHECKER_ADMIN_PASSWORD allows scripted setup, but never accept passwords as arguments."""
+	import getpass
+	scripted = os.environ.get("PRICE_CHECKER_ADMIN_PASSWORD")
+	if scripted:
+		return scripted
+	password = getpass.getpass(f"{prompt}: ")
+	if password != getpass.getpass("Repeat password: "):
+		raise SystemExit("The passwords don't match.")
+	return password
+
+
+def cli_create_admin(arguments: list[str]) -> None:
+	username = (arguments[0] if arguments else os.environ.get("PRICE_CHECKER_ADMIN_USERNAME") or input("Admin username: ")).strip()
+	password = read_new_password("Admin password")
+	try:
+		with connect() as connection:
+			first_account = real_user_count(connection) == 0
+			user_id = create_user(connection, username, password, "admin")
+			if first_account:
+				claim_local_data(connection, user_id) #An existing single-user watchlist moves to the first account
+	except ValueError as problem:
+		raise SystemExit(str(problem))
+	print(f"Admin '{username}' created." + (" Existing watchlist data was assigned to this account." if first_account else ""))
+
+
+def cli_reset_password(arguments: list[str]) -> None:
+	username = (arguments[0] if arguments else input("Username: ")).strip()
+	with connect() as connection:
+		row = connection.execute("SELECT id FROM users WHERE username = ? AND username != 'local'", (username,)).fetchone()
+		if row is None:
+			raise SystemExit(f"No account named '{username}'.")
+		try:
+			auth.set_password(connection, row["id"], read_new_password())
+		except ValueError as problem:
+			raise SystemExit(str(problem))
+	print(f"Password reset for '{username}'. The account is unlocked and signed out everywhere.")
+
+
+def run_cli_command(command: str, arguments: list[str]) -> None:
+	if command == "init-secret":
+		path = create_secret_file(SETTINGS.data_dir)
+		print(f"Secret ready at {path}")
+	elif command == "create-admin":
+		cli_create_admin(arguments)
+	elif command == "reset-password":
+		cli_reset_password(arguments)
+	else:
+		raise SystemExit(f"Unknown command '{command}'. Available: init-secret, create-admin, reset-password")
 
 
 init_db()
 if DEVELOPER_MODE:
 	init_dev_db()
 
+
+if SETTINGS.trusted_proxies:
+	from werkzeug.middleware.proxy_fix import ProxyFix
+	app.wsgi_app = ProxyFix(app.wsgi_app, x_for=SETTINGS.trusted_proxies, x_proto=SETTINGS.trusted_proxies, x_host=SETTINGS.trusted_proxies)
+
+if __name__ != "__main__":
+	enforce_startup_requirements() #Covers production servers that import main:app
+
 if __name__ == "__main__":
-	host = "127.0.0.1"
-	port = int(os.environ.get("PORT", "5000"))
-	server = make_server(host, port, app)
+	import sys
+	if len(sys.argv) > 1:
+		run_cli_command(sys.argv[1], sys.argv[2:])
+		raise SystemExit(0)
+
+	enforce_startup_requirements()
+	host, port = SETTINGS.host, SETTINGS.port
+	ssl_context = (str(SETTINGS.tls_cert), str(SETTINGS.tls_key)) if SETTINGS.tls == "custom" else None
+	server = make_server(host, port, app, ssl_context=ssl_context)
 	threading.Thread(target=check_for_update_background, daemon=True).start()
-	open_app_browser(host, port)
+
+	if SETTINGS.open_browser:
+		open_app_browser(host, port)
+
+	print(f"Price Checker running in {SETTINGS.mode} mode at {app_url(host, port)}")
 	server.serve_forever()
 	server.server_close()

@@ -431,6 +431,49 @@ button[disabled] { background: #9ca597; cursor: not-allowed; }
     margin-bottom: 0;
 }
 
+input[type=password], input[type=number] {
+    border: 1px solid #9ca597;
+    font-size: 1rem;
+    min-width: 0;
+    padding: 8px 10px;
+}
+
+.auth-page { max-width: 900px; }
+
+.auth-card { max-width: 440px; }
+
+.auth-card form { flex-direction: column; }
+
+.error-notice { border-left-color: #b3261e; }
+
+.user-bar {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    font: .9rem system-ui, sans-serif;
+    gap: 10px;
+}
+
+.user-bar form { display: inline-flex; }
+
+.user-bar button { padding: 6px 12px; }
+
+.user-row {
+    align-items: center;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: space-between;
+    padding: 12px 0;
+}
+
+.user-name { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+.user-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.invite-link { box-sizing: border-box; font-family: monospace; width: 100%; }
+
 table {
     border-collapse: collapse;
     font: .92rem system-ui, sans-serif;

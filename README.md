@@ -182,7 +182,6 @@ Only check pages where automated access is permitted by the site's terms and app
 
 ### Upcoming / Noted
 
-- Resetting your place after you run a function can get annoying. Add a page location persistance function.
 - Mapping 2 datasheets together.
 - Persistance to all store numbers. 
 - Combine similar items onto a single line graph, then export as an image.
@@ -230,3 +229,4 @@ Only check pages where automated access is permitted by the site's terms and app
 - Apify API integration (Lowes), including bulk price display and `bulk_price`/`bulk_quantity` CSV export columns.
 - Local server shutdown is now togglable.
 - Setting preferances. Allowing the user to map an api to a single item so every time the check is called it uses that mapped api. 
+- Resetting your place after you run a function can get annoying. Add a page location persistance function.

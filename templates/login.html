@@ -1,0 +1,26 @@
+{% extends "auth_base.html" %}
+{% block title %}Sign in - Price Checker{% endblock %}
+{% block content %}
+<section class="auth-card">
+	<h2>Sign in</h2>
+	<form method="post" action="{{ url_for('login') }}">
+		<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+		<input type="hidden" name="next" value="{{ next_url }}">
+		<label for="username">Username</label>
+		<input id="username" name="username" type="text" autocomplete="username" autofocus required>
+		<label for="password">Password</label>
+		<input id="password" name="password" type="password" autocomplete="current-password" required>
+		{% if remember_enabled %}
+		<label class="duplicate-option"><input type="checkbox" name="remember"> Keep me signed in on this device</label>
+		{% endif %}
+		<button type="submit">Sign in</button>
+	</form>
+	{% if registration == 'open' %}
+	<p class="help">No account? <a href="{{ url_for('register') }}">Create one</a>.</p>
+	{% elif registration == 'invite' %}
+	<p class="help">New here? Ask an administrator for an invite link.</p>
+	{% else %}
+	<p class="help">Accounts are created by an administrator.</p>
+	{% endif %}
+</section>
+{% endblock %}
