@@ -35,7 +35,7 @@
 - Added some more variables in `main.py` to help with [Live Sharing](https://marketplace.visualstudio.com/items?itemName=MS-vsliveshare.vsliveshare). Added the ability to map Api Providers to products. Allowing the user to map out their entire watch list. Click an item's retailer button and use the new `API for this item` drop down. the row shows an `API <name>` label when an item is pinned. Unpinned items use the global provider at the top of the page. Added a scroll persistence script in `page.html` it will save your position every time you reload the page.
 
 # [v0.1.0](https://github.com/Adrian-Utz/price-checker/releases/tag/0.1.0)
-- Perhaps the greatest undertaking of this program. Adding the ability to run the program on a LAN or over the internet. For this part I seperated it into 10 developement phases. Phases 1,2,3 and 5 give a working mulit-user LAN mode over HTTP. Phase 4 and 6 are about user input, serving and LAN TLS. Phase 6 also sets up the production server, and phase 7 is all about public mode. Phases 8, 9 and 10 cover UI, tests, and documentation.  
+- Perhaps the greatest undertaking of this program. Adding the ability to run the program on a LAN server or on the internet. For this part I seperated it into 10 development phases. Phases 1,2,3 and 5 give a working multi-user LAN mode over HTTP. Phase 4 and 6 are about user input, serving and LAN TLS. Phase 6 also sets up the production server, and phase 7 is all about public mode. Phases 8, 9 and 10 cover UI, tests, and documentation.  
 
 ### Phase 1:
 
@@ -95,3 +95,23 @@
 * Schema: migration 4 (schema version now 4) adds the session-invalidation counter, last-login time, an invites table and a login-attempts table.
 * Login required: outside local mode every page except sign-in and registration redirects to /login. Local mode is unchanged.
 * Test change: the old 401 test now expects a redirect to the login page.
+
+### Phase 4:
+
+**What was changed**
+
+Export
+
+* JSON and CSV export were already limited to the current user in Phase 2, and they still are.
+* The raw SQLite export now works only in local mode, because the file holds every user's data and password hashes. It returns 403 in LAN and public mode.
+
+Import
+
+* The old import that replaced the whole database is gone, and /import/db now returns 404. The new POST /import is available in every mode, including local, and accepts .json, .csv or .sqlite3.
+* A product you already track (same URL and store) keeps its row and only gains price history it doesn't have, matched by timestamp. New products are added, and nothing is replaced or deleted. Re-importing the same file adds nothing twice.
+* The per-user MAX_URLS limit applies. Products over the limit are skipped and counted in the result message.
+* Every row is written with your user id, so ownership fields in the file are ignored.
+* Uploaded .sqlite3 files are opened read-only, and only known columns are read. Older files without newer columns still import.
+* Rows with invalid URLs or timestamps are skipped, and numeric strings (such as from CSV) are cleaned up. A file can hold at most 1,000 products and 20,000 price records per product.
+* The page's import dialog is now "Import watchlist" and shows for everyone, with text explaining the merge.
+* Because the import goes through MAX_URLS, imported CSV prices are stored as real numbers now. Before, they were stored as strings.

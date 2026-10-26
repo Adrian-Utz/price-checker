@@ -159,37 +159,35 @@ Written by: AJ Utz
 		</form>
 		<p class="help">Each URL is checked through the selected API provider ({{ api_provider }}), then saved locally so you can review the result later.</p>
 		<div class="watchlist-actions">
-			{% if allow_database_files %}<button class="export-button import-button" type="button" onclick="document.getElementById('import-db').showModal()">Import database</button>{% endif %}
+			<button class="export-button import-button" type="button" onclick="document.getElementById('import-db').showModal()">Import watchlist</button>
 			<div class="export-actions">
 				<a class="export-button" href="{{ url_for('export_watchlist_json') }}">Export JSON</a>
 				<a class="export-button" href="{{ url_for('export_watchlist_csv') }}">Export CSV</a>
 				{% if allow_database_files %}<a class="export-button" href="{{ url_for('export_watchlist_db') }}">Export database</a>{% endif %}
 			</div>
 		</div>
-		{% if allow_database_files %}
 		<dialog class="history-modal" id="import-db">
 			<div class="modal-header">
 				<div>
-					<p class="eyebrow">Switch watchlists</p>
-					<h3>Import database</h3>
+					<p class="eyebrow">Add to your watchlist</p>
+					<h3>Import watchlist</h3>
 				</div>
 				<form method="dialog">
-					<button class="modal-close" aria-label="Close import database">Close</button>
+					<button class="modal-close" aria-label="Close import">Close</button>
 				</form>
 			</div>
 			<div class="modal-content">
-				<form method="post" action="{{ url_for('import_watchlist_db') }}" enctype="multipart/form-data">
+				<form method="post" action="{{ url_for('import_watchlist') }}" enctype="multipart/form-data">
 					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-					<p class="help">Pick a .sqlite3, .csv, or .json watchlist exported from this app (yours or someone else's). Your current database is backed up automatically before it's replaced.</p>
-					<label for="database-file">Database file</label>
+					<p class="help">Pick a .json, .csv, or .sqlite3 watchlist exported from this app (yours or someone else's). It is merged into your watchlist: nothing is replaced or deleted, products you already track just gain any missing price history, and the {{ max_urls }}-product limit still applies.</p>
+					<label for="database-file">Watchlist file</label>
 					<input id="database-file" name="database_file" type="file" accept=".sqlite3,.sqlite,.db,.csv,.json" required>
 					<div class="modal-actions">
-						<button type="submit">Import database</button>
+						<button type="submit">Import watchlist</button>
 					</div>
 				</form>
 			</div>
 		</dialog>
-		{% endif %}
 	</section>
 	<section>
 		<!--Starting section of your watchlist-->

@@ -8,7 +8,6 @@ __lazy_modules__ = {
 	"math",
 	"random",
 	"re",
-	"shutil",
 	"sqlite3",
 	"time",
 	"datetime",
@@ -33,8 +32,8 @@ import os
 import random
 import re
 import secrets
-import shutil
 import sqlite3
+import tempfile
 import threading
 import time
 import webbrowser
@@ -51,11 +50,11 @@ from api_clients.unwrangle_client import product_bulk_price as unwrangle_bulk_pr
 from utils.charting import chart_observations_in_range, format_observed_at_utc, price_chart
 import utils.check_for_update as check_for_update
 from utils.watchlist_io import (
-	build_watchlist_database,
+	merge_watchlist,
 	parse_watchlist_csv,
 	parse_watchlist_json,
+	read_watchlist_database,
 	source_for,
-	validate_watchlist_database,
 	watchlist_export_rows,
 )
 from utils.database import (
@@ -170,6 +169,7 @@ def record_dev_api_responses(url: str, provider: str, responses: list[dict[str, 
 
 
 def _find_json_field(value: object, field_names: tuple[str, ...], path: str = "$") -> tuple[str | None, object]:
+	"""Locate the requested json value. Used in the dev responce replayer."""
 	if isinstance(value, dict):
 		for name in field_names:
 			if name in value and value[name] is not None:
@@ -1217,38 +1217,40 @@ def export_watchlist_db():
 	return send_file(DATABASE_PATH, as_attachment=True, download_name="price-checker-watchlist.sqlite3", mimetype="application/vnd.sqlite3")
 
 
-@app.post("/import/db")
-def import_watchlist_db():
-	"""Replace the active database with an uploaded SQLite/CSV/JSON file, keeping a backup of the previous one."""
-	require_whole_database_access()
+@app.post("/import")
+def import_watchlist():
+	"""Merge an uploaded SQLite/CSV/JSON watchlist into the current user's data. Nothing is replaced or deleted."""
+	user_id = current_user_id()
 	uploaded = request.files.get("database_file")
 
 	if uploaded is None or not uploaded.filename:
-		return redirect(url_for("index", message="Choose a database file to import."))
+		return redirect(url_for("index", message="Choose a file to import."))
 
 	filename = uploaded.filename.lower()
-	temp_path = DATABASE_PATH.with_suffix(".upload.tmp")
 
 	try:
 		if filename.endswith((".sqlite3", ".sqlite", ".db")):
-			uploaded.save(temp_path)
-			validate_watchlist_database(temp_path)
+			with tempfile.TemporaryDirectory(prefix="price-checker-import-") as scratch:
+				upload_path = Path(scratch) / "upload.sqlite3"
+				uploaded.save(upload_path)
+				products = read_watchlist_database(upload_path)
 		elif filename.endswith(".json"):
-			build_watchlist_database(temp_path, parse_watchlist_json(uploaded.read().decode("utf-8")))
+			products = parse_watchlist_json(uploaded.read().decode("utf-8-sig"))
 		elif filename.endswith(".csv"):
-			build_watchlist_database(temp_path, parse_watchlist_csv(uploaded.read().decode("utf-8")))
+			products = parse_watchlist_csv(uploaded.read().decode("utf-8-sig"))
 		else:
 			return redirect(url_for("index", message="Choose a .sqlite3, .sqlite, .db, .csv, or .json file."))
-		if DATABASE_PATH.exists():
-			shutil.copyfile(DATABASE_PATH, DATABASE_PATH.with_suffix(".backup.sqlite3"))
-		os.replace(temp_path, DATABASE_PATH)
+		with connect() as connection:
+			result = merge_watchlist(connection, user_id, products, max_products=MAX_URLS, normalize_url=normalize_url)
 	except (ValueError, OSError) as error:
-		temp_path.unlink(missing_ok=True)
-		return redirect(url_for("index", message=f"Could not import database: {error}"))
+		return redirect(url_for("index", message=f"Could not import: {error}"))
 
-	init_db()
-
-	return redirect(url_for("index", message="Database imported. The previous database was backed up."))
+	message = f"Imported {result['added']} new and merged {result['merged']} existing products ({result['observations']} price records added)."
+	if result["over_limit"]:
+		message += f" {result['over_limit']} skipped because the watchlist limit is {MAX_URLS}."
+	if result["skipped"]:
+		message += f" {result['skipped']} skipped because they had no valid URL."
+	return redirect(url_for("index", message=message))
 
 
 @app.post("/shutdown")
@@ -1261,10 +1263,11 @@ def shutdown():
 
 
 def require_whole_database_access() -> None:
-	"""Raw database export/import covers every user's data, so it only exists in local mode until per-user import (Phase 4)."""
+	"""The raw database file holds every user's data and password hashes, so it is only offered in local mode,
+	where the one implicit user owns it all. Other modes use the per-user JSON/CSV export."""
 	current_user_id()
 	if not SETTINGS.is_local:
-		abort(403, description="Whole-database export and import are disabled when accounts are enabled.")
+		abort(403, description="Whole-database export is disabled when accounts are enabled.")
 
 
 @app.post("/settings/provider")
