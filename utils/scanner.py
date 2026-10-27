@@ -5,6 +5,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import date, datetime
 
+from utils.limits import BudgetExceeded
 
 ConnectionFactory = Callable[[], AbstractContextManager[sqlite3.Connection]]
 ProductRefresh = Callable[[sqlite3.Row], None]
@@ -26,12 +27,13 @@ def run_scan(
 	cache_is_fresh: Callable[[str | None], bool],
 	min_delay_seconds: float,
 	refresh_product: ProductRefresh,
-) -> None:
+) -> bool:
 	"""
 	## Runs a full scan of one user's products.
 	This function initiates a scan, updates product details based on their latest observations,
 	and records observations for each product. It handles retries and ensures that only one URL is fetched
 	per second to avoid overwhelming the server.
+	Returns False if the scan stopped early because a daily API budget ran out.
 	"""
 	started = utc_now().isoformat()#Record the start time of the scan
 
@@ -40,6 +42,7 @@ def run_scan(
 		scan_id = connection.execute("INSERT INTO scans (user_id, started_at, status) VALUES (?, ?, ?)", (user_id, started, "running")).lastrowid
 		products = connection.execute("SELECT * FROM products WHERE user_id = ? ORDER BY id", (user_id,)).fetchall() #Retrieve this user's products
 	previous_fetch = 0.0 #initialize a variable to track the time between fetches
+	finished = True
 
 	#Iterate over each product in the list
 	for product in products:
@@ -49,10 +52,15 @@ def run_scan(
 		#Wait to ensure a minimum delay between fetches to avoid overwhelming the server
 		time.sleep(max(0, min_delay_seconds + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
 		previous_fetch = time.monotonic()
-		refresh_product(product)
+		try:
+			refresh_product(product)
+		except BudgetExceeded:
+			finished = False #Stop here; a 'stopped' scan doesn't use up the day's one completed scan
+			break
 	#Mark the scan as complete in the database
 	with connect() as connection:
-		connection.execute("UPDATE scans SET completed_at = ?, status = ? WHERE id = ?", (utc_now().isoformat(), "completed", scan_id))
+		connection.execute("UPDATE scans SET completed_at = ?, status = ? WHERE id = ?", (utc_now().isoformat(), "completed" if finished else "stopped", scan_id))
+	return finished
 
 
 def refresh_product(

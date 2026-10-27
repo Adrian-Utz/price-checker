@@ -10,7 +10,7 @@ Written by: AJ Utz
 <head>
 	<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>{% block title %}Price Checker{% endblock %}</title>
-	<script>document.documentElement.dataset.theme = localStorage.getItem("price-checker-theme") || "default";</script>
+	<script nonce="{{ csp_nonce }}">document.documentElement.dataset.theme = localStorage.getItem("price-checker-theme") || "default";</script>
 	<link rel="stylesheet" href="{{ url_for('static', filename='stylesheet.css') }}">
 </head>
 <body class="auth-page">
@@ -24,5 +24,10 @@ Written by: AJ Utz
 	{% if message %}<p class="notice">{{ message }}</p>{% endif %}
 	{% if error %}<p class="notice error-notice" role="alert">{{ error }}</p>{% endif %}
 	{% block content %}{% endblock %}
+	<script nonce="{{ csp_nonce }}">
+		document.addEventListener("focusin", function (event) {
+			if (event.target.matches("[data-select-on-focus]")) { event.target.select(); }
+		});
+	</script>
 </body>
 </html>

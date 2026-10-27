@@ -40,7 +40,7 @@ import webbrowser
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 from werkzeug.serving import make_server
 from flask import Flask, Response, abort, g, redirect, render_template, request, send_file, session, url_for
 
@@ -69,6 +69,7 @@ from utils.database import (
 from utils.config import ConfigError, create_secret_file, load_settings, startup_errors
 from utils.users import claim_local_data, create_user, get_user, local_user_id, real_user_count
 from utils import auth
+from utils.limits import BudgetExceeded, calls_today, reserve_api_call
 from utils.scanner import (
 	refresh_product as _refresh_product,
 	run_scan as _run_scan,
@@ -116,6 +117,9 @@ app.secret_key = SETTINGS.secret or secrets.token_hex(32) #Only local mode may f
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = SETTINGS.secure_cookies
+# The __Host- prefix makes browsers refuse the cookie unless it is Secure, host-only and path "/".
+app.config["SESSION_COOKIE_NAME"] = "__Host-session" if SETTINGS.secure_cookies else "session"
+app.config["CSRF_ENABLED"] = True
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=max(SETTINGS.remember_days, 1))
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024 #Cap uploaded database files at 64 MB
 server = None
@@ -422,31 +426,102 @@ def update_env_setting(content: str, key: str, value: str) -> str:
 	return content.rstrip("\n") + "\n" + setting + "\n"
 
 
+def host_allowed(host: str) -> bool:
+	"""Match the Host header (port stripped) against PRICE_CHECKER_ALLOWED_HOSTS entries: exact names or '*.domain'."""
+	name = host.lower()
+	name = name[: name.rindex("]") + 1] if name.startswith("[") and "]" in name else name.split(":", 1)[0]
+	for allowed in SETTINGS.allowed_hosts:
+		allowed = allowed[: allowed.rindex("]") + 1] if allowed.startswith("[") and "]" in allowed else allowed.split(":", 1)[0]
+		if name == allowed or (allowed.startswith("*.") and name.endswith(allowed[1:]) and len(name) > len(allowed) - 1):
+			return True
+	return False
+
+
+@app.before_request
+def check_host_header() -> None:
+	"""Reject unexpected Host headers (DNS rebinding, host-header poisoning). LAN mode checks only when hosts are configured."""
+	if SETTINGS.allowed_hosts and not host_allowed(request.host):
+		abort(400, description="Unexpected host name.")
+	g.csp_nonce = secrets.token_urlsafe(16)
+
+
+@app.context_processor
+def inject_security_context() -> dict:
+	return {
+		"csp_nonce": g.get("csp_nonce", ""),
+		"auto_shutdown": SETTINGS.is_local and auto_server_shutdown,
+	}
+
+
+@app.after_request
+def add_security_headers(response):
+	nonce = g.get("csp_nonce", "")
+	response.headers["Content-Security-Policy"] = (
+		f"default-src 'self'; script-src 'self' 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; "
+		"img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	)
+	response.headers["X-Content-Type-Options"] = "nosniff"
+	response.headers["X-Frame-Options"] = "DENY"
+	response.headers["Referrer-Policy"] = "same-origin" #Invite tokens travel in URLs
+	response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+	if SETTINGS.secure_cookies and request.is_secure:
+		response.headers["Strict-Transport-Security"] = "max-age=31536000"
+	if not SETTINGS.is_local and request.endpoint != "static":
+		response.headers["Cache-Control"] = "no-store"
+	return response
+
+
+def api_budget_view(user_id: int) -> dict | None:
+	if not SETTINGS.user_daily_api_calls:
+		return None
+	with connect() as connection:
+		return {"used": calls_today(connection, user_id), "limit": SETTINGS.user_daily_api_calls}
+
+
+def recheck_limited():
+	"""Per-user cap on re-check requests per hour. Returns a redirect when the user is over it, else None."""
+	limit = SETTINGS.rechecks_per_hour
+	if not limit:
+		return None
+	identity = str(current_user_id())
+	with connect() as connection:
+		wait = auth.retry_after_seconds(connection, identity, "recheck", limit, 3600)
+		if wait:
+			minutes = max(1, -(-wait // 60))
+			return redirect(url_for("index", message=f"Too many re-checks. Try again in about {minutes} minute{'s' if minutes != 1 else ''}."))
+		auth.record_attempt(connection, identity, "recheck")
+	return None
+
+
+def same_origin(request_origin: str) -> bool:
+	return urlsplit(request_origin).netloc.lower() == request.host.lower()
+
+
 @app.before_request
 def protect_post_forms() -> None:
 	"""
-	## Protects POST requests by checking for valid CSRF tokens
-	This function runs before each request and ensures that the form token is valid
-	It cancels any pending shutdown, checks if a CSRF token exists in the session, and aborts with a 400 error 
-	if the token is invalid or missing when processing POST requests to endpoints other than 'shutdown'.
+	## Protects every POST by checking for a valid CSRF token
+	Cancels any pending shutdown, makes sure the session has a token, then requires POSTs to carry it
+	(form field or X-CSRF-Token header) and to come from this site (Origin / Sec-Fetch-Site).
 	"""
 	cancel_pending_shutdown()
 
-	#If the CSRF token is not in the session, generate a new one.
-	#Fun fact: Passing 32 as the argument tells Python to generate 32 bytes of random data. 
-	#This equates to 256 bits of entropy. Brute-forcing a 256-bit key would require more energy than exists in the observable universe, 
-	#making guessing attacks a mathematical impossibility.
+	#Passing 32 to token_urlsafe generates 32 random bytes (256 bits of entropy).
 	if "csrf_token" not in session:
 		session["csrf_token"] = secrets.token_urlsafe(32)
 
-	#Check if the request method is POST and the endpoint is not 'shutdown'
-	if request.method == "POST" and request.endpoint != "shutdown" and not app.testing:
-		#Retrieve the submitten CSRF token from the form
-		submitted = request.form.get("csrf_token", "")
-
-		#Compare the submitted token with the session token using a secure comparison function
-		if not secrets.compare_digest(submitted, session["csrf_token"]):
-			abort(400, description="Invalid form token.")
+	if request.method != "POST" or not app.config["CSRF_ENABLED"]:
+		return
+	if request.headers.get("Sec-Fetch-Site") == "cross-site":
+		abort(400, description="Cross-site request blocked.")
+	if request.endpoint == "shutdown":
+		return #sendBeacon can't carry a token; the endpoint is local-only and cross-site is rejected above
+	origin = request.headers.get("Origin")
+	if origin and origin != "null" and not same_origin(origin):
+		abort(400, description="Cross-origin request blocked.")
+	submitted = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token", "")
+	if not secrets.compare_digest(submitted, session["csrf_token"]):
+		abort(400, description="Invalid form token.")
 
 
 PUBLIC_ENDPOINTS = {"login", "register", "static"}
@@ -491,8 +566,8 @@ def schedule_shutdown() -> None:
 		shutdown_timer.start()
 
 
-def run_scan(user_id: int) -> None:
-	_run_scan(
+def run_scan(user_id: int) -> bool:
+	return _run_scan(
 		user_id=user_id,
 		connect=connect,
 		utc_now=utc_now,
@@ -504,6 +579,12 @@ def run_scan(user_id: int) -> None:
 
 
 def refresh_product(product: sqlite3.Row) -> None:
+	# Reserve the credit before fetching: a failed fetch would otherwise overwrite the stored price with an error.
+	with connect() as connection:
+		reserve_api_call(
+			connection, product["user_id"],
+			user_limit=SETTINGS.user_daily_api_calls, global_limit=SETTINGS.global_daily_api_calls,
+		)
 	_refresh_product(
 		product,
 		connect=connect,
@@ -891,6 +972,7 @@ def index():
 		is_admin=is_admin(),
 		current_username=current_user()["username"],
 		accounts_enabled=not SETTINGS.is_local,
+		api_budget=api_budget_view(user_id),
 		serpapi_ready=serpapi_ready(), 
 		unwrangle_ready=unwrangle_ready(), 
 		apify_ready=apify_ready(),
@@ -911,7 +993,7 @@ def index():
 
 @app.get("/dev/responses")
 def dev_responses():
-	if not DEVELOPER_MODE:
+	if not DEVELOPER_MODE or not SETTINGS.is_local:
 		abort(404)
 	with connect_dev() as connection:
 		rows = connection.execute(
@@ -935,7 +1017,7 @@ def dev_responses():
 @app.post("/dev/responses/<int:response_id>/replay")
 def replay_dev_response_route(response_id: int):
 	"""Replay and show what data is getting pulled from the responce. No API credits are used"""
-	if not DEVELOPER_MODE:
+	if not DEVELOPER_MODE or not SETTINGS.is_local:
 		abort(404)
 	with connect_dev() as connection:
 		rows = connection.execute(
@@ -1115,7 +1197,13 @@ def recheck_url(product_id: int):
 	if not DEVELOPER_MODE and not product["error"]:
 		return redirect(url_for("index", message="Re-check is only available for items whose last check failed."))
 
-	refresh_product(product)
+	limited = recheck_limited()
+	if limited:
+		return limited
+	try:
+		refresh_product(product)
+	except BudgetExceeded as error:
+		return redirect(url_for("index", message=str(error)))
 
 	return redirect(url_for("index", message="Re-checked that item."))
 
@@ -1131,6 +1219,9 @@ def recheck_selected():
 
 	placeholders = ",".join("?" * len(selected_ids))
 
+	limited = recheck_limited()
+	if limited:
+		return limited
 	lock = scan_lock_for(user_id)
 	if not lock.acquire(blocking=False):
 		return redirect(url_for("index", message="A check is already running for your account."))
@@ -1141,16 +1232,26 @@ def recheck_selected():
 			).fetchall()
 
 		previous_fetch = 0.0
+		checked = 0
+		budget_message = None
 
 		for product in products:
 			#Keep the same pacing as a full scan so a large selection doesn't hammer the APIs
 			if previous_fetch:
 				time.sleep(max(0, MIN_DELAY_SECONDS + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
 			previous_fetch = time.monotonic()
-			refresh_product(product)
+			try:
+				refresh_product(product)
+			except BudgetExceeded as error:
+				budget_message = str(error)
+				break
+			checked += 1
 	finally:
 		lock.release()
-	return redirect(url_for("index", message=f"Re-checked {len(products)} selected item{'s' if len(products) != 1 else ''}."))
+	message = f"Re-checked {checked} selected item{'s' if checked != 1 else ''}."
+	if budget_message:
+		message = f"{message} {budget_message}"
+	return redirect(url_for("index", message=message))
 
 
 @app.post("/scan")
@@ -1163,10 +1264,12 @@ def scan():
 	try:
 		if not scan_allowed(user_id):
 			return redirect(url_for("index", message="Only one completed scan is allowed per day."))
-		run_scan(user_id)
+		finished = run_scan(user_id)
 	finally:
 		lock.release()
 
+	if finished is False:
+		return redirect(url_for("index", message="Scan stopped: the daily API budget ran out. It resets at midnight UTC."))
 	return redirect(url_for("index", message="Scan complete."))
 
 
@@ -1256,6 +1359,8 @@ def import_watchlist():
 @app.post("/shutdown")
 def shutdown():
 	"""Detect when the user closed the tab and shutdown the rest of the program"""
+	if not SETTINGS.is_local:
+		abort(404)
 	if request.remote_addr not in {"127.0.0.1", "::1", "localhost", None}:
 		abort(403)
 	schedule_shutdown()
@@ -1286,7 +1391,7 @@ def set_api_provider():
 def save_env_file():
 	"""Update the user's .env"""
 	require_admin()
-	if not edit_env:
+	if not edit_env or not SETTINGS.is_local:
 		abort(403, description="Editing the .env file is disabled.")
 	try:
 		content = request.form.get("env_content", "")
@@ -1299,7 +1404,7 @@ def save_env_file():
 
 def open_app_browser(host: str, port: int) -> None:
 	"""Open a web browser for a specified host and port"""
-	if os.environ.get("PRICE_CHECKER_OPEN_BROWSER", "1").lower() in {"0", "false", "no"}:
+	if not SETTINGS.is_local or os.environ.get("PRICE_CHECKER_OPEN_BROWSER", "1").lower() in {"0", "false", "no"}:
 		return
 	url = app_url(host, port)
 	threading.Timer(0.8, webbrowser.open, args=(url,), kwargs={"new": 2}).start()

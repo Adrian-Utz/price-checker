@@ -51,7 +51,7 @@ def fetch_product(
 	provider = provider if provider in ITEM_PROVIDERS else api_provider()
 	client = None
 	error = None
-	# SerpApi only covers Walmart and Home Depot; Unwrangle covers every supported retailer.
+	# SerpApi only covers Walmart and Home Depot; Unwrangle covers every supported retailer. Apify only supports Lowes at the moment.
 	try:
 		if provider == "serpapi":
 			if "lowes" in host or "acehardware" in host or "samsclub" in host:

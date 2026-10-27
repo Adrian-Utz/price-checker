@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ MODES = ("local", "lan", "public")
 TLS_MODES = ("off", "selfsigned", "custom")
 REGISTRATION_MODES = ("admin", "invite", "open")
 LOCAL_HOST = "127.0.0.1"
+LOCAL_HOSTNAMES = ("localhost", "127.0.0.1", "[::1]")
 SECRET_FILE_NAME = "secret_key"
 MIN_SECRET_LENGTH = 32
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -61,6 +63,10 @@ class Settings:
 	login_lockout_minutes: int = 15
 	login_ip_limit: int = 20
 	retry_after_header: bool = True
+	allowed_hosts: tuple[str, ...] = ()
+	user_daily_api_calls: int = 0
+	global_daily_api_calls: int = 0
+	rechecks_per_hour: int = 0
 
 	@property
 	def is_local(self) -> bool:
@@ -181,6 +187,15 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
 	if registration not in REGISTRATION_MODES:
 		raise ConfigError(f"PRICE_CHECKER_REGISTRATION must be one of: {', '.join(REGISTRATION_MODES)}.")
 
+	allowed_hosts = tuple(
+		host.strip().lower() for host in env.get("PRICE_CHECKER_ALLOWED_HOSTS", "").split(",") if host.strip()
+	)
+	if is_local and not allowed_hosts:
+		allowed_hosts = LOCAL_HOSTNAMES #Rejecting other Host headers blocks DNS-rebinding attacks on the local server
+	for entry in allowed_hosts:
+		if not re.fullmatch(r"(\*\.)?[a-z0-9._\[\]:-]+", entry):
+			raise ConfigError(f"PRICE_CHECKER_ALLOWED_HOSTS has an invalid entry: {entry!r}.")
+
 	cert = env.get("PRICE_CHECKER_TLS_CERT", "").strip()
 	key = env.get("PRICE_CHECKER_TLS_KEY", "").strip()
 	database = env.get("PRICE_CHECKER_DB", "").strip()
@@ -227,6 +242,11 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
 		login_lockout_minutes=_integer(env, "PRICE_CHECKER_LOGIN_LOCKOUT_MINUTES", 15, 1, 1440),
 		login_ip_limit=_integer(env, "PRICE_CHECKER_LOGIN_IP_LIMIT", 20, 5, 1000),
 		retry_after_header=_flag(env, "PRICE_CHECKER_RETRY_AFTER", True),
+		allowed_hosts=allowed_hosts,
+		# One API call is one credit. Local mode has no limits by default; shared servers do.
+		user_daily_api_calls=_integer(env, "PRICE_CHECKER_USER_DAILY_API_CALLS", 0 if is_local else 150, 0, 100000),
+		global_daily_api_calls=_integer(env, "PRICE_CHECKER_GLOBAL_DAILY_API_CALLS", 0, 0, 1000000),
+		rechecks_per_hour=_integer(env, "PRICE_CHECKER_RECHECKS_PER_HOUR", 0 if is_local else 20, 0, 10000),
 	)
 
 
@@ -250,6 +270,12 @@ def startup_errors(settings: Settings, admin_exists: bool) -> list[str]:
 
 	if settings.tls == "selfsigned":
 		errors.append("PRICE_CHECKER_TLS=selfsigned is not implemented yet; use off or custom.")
+
+	if settings.mode == "public":
+		if not settings.allowed_hosts:
+			errors.append("Public mode needs PRICE_CHECKER_ALLOWED_HOSTS (comma-separated public host names, e.g. prices.example.com).")
+		if settings.trusted_proxies < 1:
+			errors.append("Public mode runs behind a reverse proxy: PRICE_CHECKER_TRUSTED_PROXIES must be at least 1, or every visitor looks like the proxy and rate limits break.")
 
 	if settings.tls == "custom":
 		if not settings.tls_cert or not settings.tls_cert.is_file():

@@ -115,3 +115,31 @@ Import
 * Rows with invalid URLs or timestamps are skipped, and numeric strings (such as from CSV) are cleaned up. A file can hold at most 1,000 products and 20,000 price records per product.
 * The page's import dialog is now "Import watchlist" and shows for everyone, with text explaining the merge.
 * Because the import goes through MAX_URLS, imported CSV prices are stored as real numbers now. Before, they were stored as strings.
+
+### Phase 5:
+
+**What Was Added**
+
+Lifecycle
+* `/shutdown` now returns a 404 outside of local mode,  and the tab-close beacon script is only emitted in local mode.
+* The browser auto-open is skippid outside of local mode
+* `/settings/env` and the dev-responce routes are blocked outside local mode.(Might change this later to a assignable permission.)
+
+Hardening
+* Host allowlist: set it with `PRICE_CHECKER_ALLOWED_HOSTS`. Local mode defaults to the loopback names, which also blocks [DNS rebinding](https://en.wikipedia.org/wiki/DNS_rebinding). LAN only checks if you set it. Public mode refuses to start without it.
+* Proxy hops: public mode now also refuses to start with `PRICE_CHECKER_TRUSTED_PROXIES=0`, because every visitor would look like a proxy.
+* CSRF: every POST needs the form token or an `X-CSRF-token` header. It also rejects cross-site requests, using Origin and Sec-Fetch-Site. `/shutdown` is exempt from the token but still rejects cross-site requests. A new `CSRF_ENABLED` config flag replaces the old `app.testing` skip, and the test conftest turns it off.
+* Headers:
+    * CSP with a per-request nonce, plus `nosniff`, `X-Frame-Options`, `Referrer-Policy: same-origin` and a Permissions-Policy.
+    * HSTS only over HTTPS with secure cookies.
+    * `Cache-Control: no-store` outside local mode.
+* Cookies: the session cookie is __Host-session when cookies are secure.
+* Templates: inline scripts now carry the nonce, and the inline handlers were replaced with data- attributes and one delegated listener.
+
+Budgets and rate limits
+* Defaults outside local mode are 150 API calls per user per day and 20 re-check requests per user per hour. Local mode is unlimited.
+* Both are configurable (`PRICE_CHECKER_USER_DAILY_API_CALLS`, `PRICE_CHECKER_GLOBAL_DAILY_API_CALLS` for a server-wide cap, `PRICE_CHECKER_RECHECKS_PER_HOUR`). 0 means unlimited.
+* A credit is reserved before each fetch and counts even if the fetch fails.
+* A scan that hits the limit stops and is marked `stopped`, so it doesn't use up that day's one completed scan.
+* `/recheck-selected` stops at the limit, and `/recheck` reports it.
+The home page shows "N of M calls used" when a limit is set.

@@ -175,11 +175,24 @@ def _auth(connection: sqlite3.Connection) -> None:
 	connection.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts(ip, kind, attempted_at)")
 
 
+def _api_spend(connection: sqlite3.Connection) -> None:
+	"""Paid API calls made per user per UTC day, for daily budgets."""
+	connection.execute("""
+		CREATE TABLE IF NOT EXISTS api_spend (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			day TEXT NOT NULL,
+			calls INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (user_id, day)
+		)
+	""")
+
+
 MIGRATIONS: list[tuple[str, Callable[[sqlite3.Connection], None]]] = [
 	("baseline schema", _baseline),
 	("users table", _users),
 	("per-user ownership", _ownership),
 	("authentication", _auth),
+	("API spend tracking", _api_spend),
 ]
 LATEST_VERSION = len(MIGRATIONS)
 

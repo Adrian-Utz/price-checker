@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>API Response Lab | Price Checker</title>
-  <script>document.documentElement.dataset.theme = localStorage.getItem("price-checker-theme") || "default";</script>
+  <script nonce="{{ csp_nonce }}">document.documentElement.dataset.theme = localStorage.getItem("price-checker-theme") || "default";</script>
   <link rel="stylesheet" href="{{ url_for('static', filename='stylesheet.css') }}">
 </head>
 <body>
@@ -90,7 +90,8 @@
     </section>
   </main>
 </body>
-<script>
+{% if auto_shutdown %}
+<script nonce="{{ csp_nonce }}">
 	//Local server shutdown request when user closes page
     window.addEventListener("pagehide", function (event) {
         if (!event.persisted) {
@@ -98,7 +99,8 @@
         }
     });
 </script>
-<script>
+{% endif %}
+<script nonce="{{ csp_nonce }}">
   const themeSelect = document.getElementById("theme-select");
   const savedTheme = localStorage.getItem("price-checker-theme") || "default";
 

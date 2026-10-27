@@ -10,7 +10,7 @@ Written by: AJ Utz
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Price Checker</title>
-	<script>document.documentElement.dataset.theme = localStorage.getItem("price-checker-theme") || "default";</script>
+	<script nonce="{{ csp_nonce }}">document.documentElement.dataset.theme = localStorage.getItem("price-checker-theme") || "default";</script>
 	<link rel="stylesheet" href="{{ url_for('static', filename='stylesheet.css') }}">
 </head>
 <body>
@@ -85,7 +85,7 @@ Written by: AJ Utz
 				{% endif %}
 				<!--Env editor button-->
 				{% if edit_env %}
-				<button class="env-button" type="button" onclick="document.getElementById('env-editor').showModal()">Edit .env</button>
+				<button class="env-button" type="button" data-open-dialog="env-editor">Edit .env</button>
 				{% endif %}
 				<!--Alerts if the user has configured their Api keys-->
 				{% if is_admin %}
@@ -158,8 +158,9 @@ Written by: AJ Utz
 			</span>
 		</form>
 		<p class="help">Each URL is checked through the selected API provider ({{ api_provider }}), then saved locally so you can review the result later.</p>
+		{% if api_budget %}<p class="help">API budget today: {{ api_budget.used }} of {{ api_budget.limit }} calls used (resets at midnight UTC).</p>{% endif %}
 		<div class="watchlist-actions">
-			<button class="export-button import-button" type="button" onclick="document.getElementById('import-db').showModal()">Import watchlist</button>
+			<button class="export-button import-button" type="button" data-open-dialog="import-db">Import watchlist</button>
 			<div class="export-actions">
 				<a class="export-button" href="{{ url_for('export_watchlist_json') }}">Export JSON</a>
 				<a class="export-button" href="{{ url_for('export_watchlist_csv') }}">Export CSV</a>
@@ -224,7 +225,7 @@ Written by: AJ Utz
 						</div>{% endif %}
 					</td>
 					<td>
-						<button class="retailer-button" type="button" onclick="document.getElementById('store-{{ product.id }}').showModal()">{{ product.source }}</button>
+						<button class="retailer-button" type="button" data-open-dialog="store-{{ product.id }}">{{ product.source }}</button>
 						{% set selected_store = (stores_by_retailer.get(product.source, []) | selectattr('store_id', 'equalto', product.store_id) | list | first) %}
 						{% if selected_store %}<span class="store-number">Store {{ selected_store.store_id }} · {{ selected_store.name }}</span>{% elif product.store_id %}<span class="store-number">Store {{ product.store_id }}</span>{% else %}<span class="store-number muted">All stores</span>{% endif %}
 						{% if product.api_provider %}<span class="store-number">API: {{ product.api_provider }}</span>{% endif %}
@@ -268,7 +269,7 @@ Written by: AJ Utz
 									{% for store in saved_stores %}
 									<div class="saved-store-row">
 										<span>{{ store.name }} · {{ store.location }} · Store {{ store.store_id }}</span>
-										<form method="post" action="{{ url_for('remove_store', store_record_id=store.id) }}" onsubmit="return confirm('Remove this saved store? Products assigned to it will switch to All stores.');">
+										<form method="post" action="{{ url_for('remove_store', store_record_id=store.id) }}" data-confirm="Remove this saved store? Products assigned to it will switch to All stores.">
 											<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 											<button class="remove" type="submit" aria-label="Remove saved store {{ store.store_id }}">Remove</button>
 										</form>
@@ -309,7 +310,7 @@ Written by: AJ Utz
 					<td>
 						<!--Buttons in the table. History graph, Re-check, and remove item-->
 						<div class="row-actions">
-							<button class="history-button" type="button" {% if not product.chart %}disabled{% else %}onclick="document.getElementById('history-{{ product.id }}').showModal()"{% endif %}>{{ 'View history graph' if product.chart else 'No history yet' }}</button>
+							<button class="history-button" type="button" {% if not product.chart %}disabled{% else %}data-open-dialog="history-{{ product.id }}"{% endif %}>{{ 'View history graph' if product.chart else 'No history yet' }}</button>
 							{% if developer_mode or product.error %}<form method="post" action="{{ url_for('recheck_url', product_id=product.id) }}">
 								<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 								<button class="recheck-button" title="Re-check this item">Re-check</button>
@@ -340,12 +341,12 @@ Written by: AJ Utz
 										<input id="chart-start-{{ product.id }}" type="date" data-chart-start min="{{ product.chart_min_date }}" max="{{ product.chart_end_date }}" value="{{ product.chart_start_date }}">
 										<label for="chart-end-{{ product.id }}">To</label>
 										<input id="chart-end-{{ product.id }}" type="date" data-chart-end min="{{ product.chart_min_date }}" max="{{ product.chart_end_date }}" value="{{ product.chart_end_date }}">
-										<button type="button" onclick="setChartRange(this)">Apply</button>
+										<button type="button" data-chart-range>Apply</button>
 									</div>
 									<div class="chart-container">{{ product.chart }}</div>
 									<div class="chart-export-actions">
 										<label class="chart-export-option"><input type="checkbox" data-export-entire-history> Entire history</label>
-										<button class="chart-export-button" type="button" data-chart-dialog="history-{{ product.id }}" data-product-id="{{ product.id }}" data-filename="{{ product.title or 'price-history' }}" onclick="exportChartImage(this)">Download PNG</button>
+										<button class="chart-export-button" type="button" data-chart-dialog="history-{{ product.id }}" data-product-id="{{ product.id }}" data-filename="{{ product.title or 'price-history' }}" data-chart-export>Download PNG</button>
 									</div>
 								</div>
 								{% else %}<p class="chart-empty">Price history appears after a successful check.</p>{% endif %}{% if product.history_rows %}
@@ -372,7 +373,8 @@ Written by: AJ Utz
 		{% endif %}
 	</section>
 </body></html>
-<script>
+{% if auto_shutdown %}
+<script nonce="{{ csp_nonce }}">
 	//Local server shutdown request when user closes page
     window.addEventListener("pagehide", function (event) {
         if (!event.persisted) {
@@ -380,7 +382,8 @@ Written by: AJ Utz
         }
     });
 </script>
-<script>
+{% endif %}
+<script nonce="{{ csp_nonce }}">
 	//Theme changing script. Data is saved on the browser's profile database on the users hard drive.
 	const themeSelect = document.getElementById("theme-select");
 	const savedTheme = localStorage.getItem("price-checker-theme") || "default";
@@ -403,7 +406,7 @@ Written by: AJ Utz
 		applyTheme();
 	});
 </script>
-<script>
+<script nonce="{{ csp_nonce }}">
 	//Multi-select re-check controls
 	(function () {
 		const boxes = Array.from(document.querySelectorAll(".select-product"));
@@ -426,7 +429,7 @@ Written by: AJ Utz
 		update();
 	})();
 </script>
-<script>
+<script nonce="{{ csp_nonce }}">
 	//Line Chart exporting
 	function exportChartImage(button) {
 		const dialog = document.getElementById(button.dataset.chartDialog);
@@ -494,7 +497,25 @@ Written by: AJ Utz
 			});
 	}
 </script>
-<script>
+<script nonce="{{ csp_nonce }}">
+    // Delegated handlers (inline event attributes are blocked by the Content-Security-Policy)
+    document.addEventListener("click", function (event) {
+        const opener = event.target.closest("[data-open-dialog]");
+        if (opener) {
+            document.getElementById(opener.dataset.openDialog).showModal();
+            return;
+        }
+        const range = event.target.closest("[data-chart-range]");
+        if (range) { setChartRange(range); return; }
+        const exporter = event.target.closest("[data-chart-export]");
+        if (exporter) { exportChartImage(exporter); }
+    });
+    document.addEventListener("submit", function (event) {
+        const message = event.target.dataset && event.target.dataset.confirm;
+        if (message && !confirm(message)) { event.preventDefault(); }
+    });
+</script>
+<script nonce="{{ csp_nonce }}">
     // 1. Restore the scroll position when the page loads
     document.addEventListener("DOMContentLoaded", function() {
         const scrollPosition = sessionStorage.getItem("scrollPosition");
