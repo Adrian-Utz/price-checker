@@ -135,13 +135,12 @@ The price checker accepts user made databases from the following filetypes: .jso
 **SQLite upload**: The file must be a valid SQLite database and contain a `products` table. There is no stricter per-column requirement check for the database upload itself.  
 
 ## Files
-
 ```
 price checker
 ├── api_clients
 │	├── apify_api_client.py	- Sends a request to a Apify API.
 │	├── serpapi_client.py	- Sends a request to a SerpApi API.
-│	├── unwrangle_slien.py	- Sends a request to a Unwrangle API.
+│	├── unwrangle_client.py	- Sends a request to a Unwrangle API.
 ├── resources
 │	├── dark_diagram.webp	- Image for the readme
 │	├── light_diagram.webp	- Image for the readme
@@ -178,7 +177,7 @@ price checker
 
 Only check pages where automated access is permitted by the site's terms and applicable policies. Retailers can change their markup, rate-limit clients, or block automated traffic. Keep the list small, leave the delay enabled, and do not attempt to bypass CAPTCHAs, authentication, robots restrictions, or IP blocks. A browser context does not guarantee that a site will permit automation.
 
-## Features/Bugfixes
+## Features / Bugfixes
 
 ### Upcoming / Noted
 

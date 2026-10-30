@@ -22,6 +22,7 @@ class MigrationError(RuntimeError):
 
 def _baseline(connection: sqlite3.Connection) -> None:
 	"""Create the original tables, or bring a database from before versioning up to date. Safe to re-run."""
+	# Create necissary tables if they don't exist
 	for statement in (
 		"""CREATE TABLE IF NOT EXISTS products (
 			id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT,
@@ -47,32 +48,41 @@ def _baseline(connection: sqlite3.Connection) -> None:
 	):
 		connection.execute(statement)
 
+	#Get all columns in the 'products'table
 	product_columns = {row[1] for row in connection.execute("PRAGMA table_info(products)")}
 
+	#Add columns to 'products' if they don't exist
 	for column, definition in (
 		("store_id", "TEXT"), ("bulk_price", "REAL"), ("bulk_quantity", "INTEGER"),
 		("retailer_product_id", "TEXT"), ("api_provider", "TEXT"),
 	):
 		if column not in product_columns:
 			connection.execute(f"ALTER TABLE products ADD COLUMN {column} {definition}")
-	
+
+	# Get all columns in the 'observations' table
 	observation_columns = {row[1] for row in connection.execute("PRAGMA table_info(observations)")}
 
+	# Add 'bulk_price' column to 'observations' table if it does not exist
 	if "bulk_price" not in observation_columns:
 		connection.execute("ALTER TABLE observations ADD COLUMN bulk_price REAL")
 
+	# Get all columns in the 'stores' table
 	store_columns = {row[1] for row in connection.execute("PRAGMA table_info(stores)")}
 
+	# Add 'zip_state' and 'zipcode' columns to 'stores' table if they do not exist
 	for column in ("zip_state", "zipcode"):
 		if column not in store_columns:
 			connection.execute(f"ALTER TABLE stores ADD COLUMN {column} TEXT")
 
+	# Check if 'url' column in 'products' table is TEXT NOT NULL UNIQUE
 	table_definition = connection.execute(
 		"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'products'"
 	).fetchone()[0]
 
 	if "url TEXT NOT NULL UNIQUE" in table_definition:
+		# Rename 'products' table if it exists
 		connection.execute("ALTER TABLE products RENAME TO products_old")
+		 # Create a new 'products' table with the required columns
 		connection.execute("""
 			CREATE TABLE products (
 				id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT,
@@ -81,15 +91,18 @@ def _baseline(connection: sqlite3.Connection) -> None:
 				error TEXT, retailer_product_id TEXT, api_provider TEXT
 			)
 		""")
+		# Insert data from the old 'products' table into the new table
 		connection.execute("""
 			INSERT INTO products (id, url, title, source, store_id, price, currency, checked_at, error)
 			SELECT id, url, title, source, store_id, price, currency, checked_at, error
 			FROM products_old
 		""")
+		# Drop the old 'products' table
 		connection.execute("DROP TABLE products_old")
 
 
 def _users(connection: sqlite3.Connection) -> None:
+	"""Create the 'users' table if it does not exist"""
 	connection.execute("""
 		CREATE TABLE IF NOT EXISTS users (
 			id INTEGER PRIMARY KEY,
@@ -112,16 +125,25 @@ UNUSABLE_PASSWORD_HASH = "!"
 def _ownership(connection: sqlite3.Connection) -> None:
 	"""Give products, stores and scans an owner. Existing rows go to the placeholder 'local' user,
 	which the first admin account adopts (see utils.users.claim_local_data)."""
+
+	# Insert or ignore a placeholder user named 'local' with a usuable password hash
 	connection.execute(
 		"INSERT OR IGNORE INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
 		(LOCAL_USERNAME, UNUSABLE_PASSWORD_HASH),
 	)
+	#Get the ID of the 'local' user
 	owner = connection.execute("SELECT id FROM users WHERE username = ?", (LOCAL_USERNAME,)).fetchone()[0]
+
+	#Iterate over the tables 'products' and 'scans'
 	for table in ("products", "scans"):
+		# Get the existing columns in the table
 		columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+		#Add a 'user_id' column to the table if it doen't exist
 		if "user_id" not in columns:
 			connection.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+		#update existing rows to assign the 'local' user ID
 		connection.execute(f"UPDATE {table} SET user_id = ? WHERE user_id IS NULL", (owner,))
+	#Check if 'user_id' exists in the 'stores' table
 	store_columns = {row[1] for row in connection.execute("PRAGMA table_info(stores)")}
 	if "user_id" not in store_columns:
 		# Store numbers are now unique per user, which SQLite can only change by rebuilding the table.
@@ -134,12 +156,16 @@ def _ownership(connection: sqlite3.Connection) -> None:
 				UNIQUE(user_id, retailer, store_id)
 			)
 		""")
+		# insert data from the old 'stores' table into the new table
 		connection.execute("""
 			INSERT INTO stores_new (id, user_id, retailer, store_id, name, location, zip_state, zipcode)
 			SELECT id, ?, retailer, store_id, name, location, zip_state, zipcode FROM stores
 		""", (owner,))
+		#Drop the old 'stores' table
 		connection.execute("DROP TABLE stores")
+		# Rename the new 'stores_new' table to 'stores'
 		connection.execute("ALTER TABLE stores_new RENAME TO stores")
+	#create indexes
 	connection.execute("CREATE INDEX IF NOT EXISTS idx_products_user ON products(user_id)")
 	connection.execute("CREATE INDEX IF NOT EXISTS idx_scans_user ON scans(user_id, status)")
 	connection.execute("CREATE INDEX IF NOT EXISTS idx_observations_product ON observations(product_id)")
@@ -147,11 +173,15 @@ def _ownership(connection: sqlite3.Connection) -> None:
 
 def _auth(connection: sqlite3.Connection) -> None:
 	"""Session invalidation, invite links and login rate limiting."""
+	#get all columns in the users table
 	columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
+	#add session_version if not in the users table
 	if "session_version" not in columns:
 		connection.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0")
+	#ditto for last_login_at
 	if "last_login_at" not in columns:
 		connection.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT")
+	#Create the invites table if it doesn't exist
 	connection.execute("""
 		CREATE TABLE IF NOT EXISTS invites (
 			id INTEGER PRIMARY KEY,
@@ -164,6 +194,7 @@ def _auth(connection: sqlite3.Connection) -> None:
 			revoked INTEGER NOT NULL DEFAULT 0
 		)
 	""")
+	#ditto for login_attempts table if it doesn't exist
 	connection.execute("""
 		CREATE TABLE IF NOT EXISTS login_attempts (
 			id INTEGER PRIMARY KEY,
@@ -172,6 +203,7 @@ def _auth(connection: sqlite3.Connection) -> None:
 			attempted_at REAL NOT NULL
 		)
 	""")
+	#Create an index on the ip and kind columns or the login_attemps table
 	connection.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts(ip, kind, attempted_at)")
 
 

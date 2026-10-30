@@ -21,7 +21,6 @@ __lazy_modules__ = {
 	"scanner",
 	"version",
 	"check_for_update",
-	"werkzeug.serving",
 }
 
 import json
@@ -41,7 +40,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 from urllib.parse import unquote, urlparse, urlsplit
-from werkzeug.serving import make_server
 from flask import Flask, Response, abort, g, redirect, render_template, request, send_file, session, url_for
 
 from version import VERSION_NUMBER
@@ -67,6 +65,8 @@ from utils.database import (
 	init_dev_db,
 )
 from utils.config import ConfigError, create_secret_file, load_settings, startup_errors
+from utils.migrations import LOCAL_USERNAME, UNUSABLE_PASSWORD_HASH
+from utils.serving import ensure_tls_files, serve, start_scheduler
 from utils.users import claim_local_data, create_user, get_user, local_user_id, real_user_count
 from utils import auth
 from utils.limits import BudgetExceeded, calls_today, reserve_api_call
@@ -440,7 +440,7 @@ def host_allowed(host: str) -> bool:
 @app.before_request
 def check_host_header() -> None:
 	"""Reject unexpected Host headers (DNS rebinding, host-header poisoning). LAN mode checks only when hosts are configured."""
-	if SETTINGS.allowed_hosts and not host_allowed(request.host):
+	if SETTINGS.allowed_hosts and request.endpoint != "healthz" and not host_allowed(request.host):
 		abort(400, description="Unexpected host name.")
 	g.csp_nonce = secrets.token_urlsafe(16)
 
@@ -524,7 +524,18 @@ def protect_post_forms() -> None:
 		abort(400, description="Invalid form token.")
 
 
-PUBLIC_ENDPOINTS = {"login", "register", "static"}
+PUBLIC_ENDPOINTS = {"login", "register", "static", "healthz"}
+
+
+@app.get("/healthz")
+def healthz():
+	"""Liveness/readiness probe for Docker and reverse proxies. Reveals nothing beyond up/down."""
+	try:
+		with connect() as connection:
+			connection.execute("SELECT 1").fetchone()
+	except sqlite3.Error:
+		return ("database unavailable", 503, {"Content-Type": "text/plain"})
+	return ("ok", 200, {"Content-Type": "text/plain"})
 
 
 @app.before_request
@@ -1465,16 +1476,61 @@ def cli_reset_password(arguments: list[str]) -> None:
 	print(f"Password reset for '{username}'. The account is unlocked and signed out everywhere.")
 
 
+def register_server(running_server) -> None:
+	"""Keep the werkzeug server so tab-close shutdown (local mode) can stop it."""
+	global server
+	server = running_server
+
+
+def run_scheduled_scans() -> None:
+	"""Scan every enabled account once, skipping anyone already scanned today. Each scan keeps the per-user lock and API budget."""
+	if not provider_ready(api_provider()):
+		print("Scheduled scan skipped: the API provider is not set up.")
+		return
+	with connect() as connection:
+		if SETTINGS.is_local:
+			user_ids = [local_user_id(connection)]
+		else:
+			user_ids = [row["id"] for row in connection.execute(
+				"SELECT id FROM users WHERE disabled = 0 AND username != ? AND password_hash != ? ORDER BY id",
+				(LOCAL_USERNAME, UNUSABLE_PASSWORD_HASH),
+			)]
+	for user_id in user_ids:
+		lock = scan_lock_for(user_id)
+		if not lock.acquire(blocking=False):
+			continue
+		try:
+			if scan_allowed(user_id):
+				run_scan(user_id)
+		except Exception as error: #One account's failure shouldn't skip everyone else
+			print(f"Scheduled scan failed for user {user_id}: {error}")
+		finally:
+			lock.release()
+
+
+def start_background_tasks() -> None:
+	"""Update check, the optional scheduled scan and (local mode) the browser. Started once in the serving process."""
+	threading.Thread(target=check_for_update_background, daemon=True).start()
+	start_scheduler(SETTINGS.scheduled_scan_hour, run_scheduled_scans)
+	if SETTINGS.open_browser:
+		open_app_browser(SETTINGS.host, SETTINGS.port)
+
+
 def run_cli_command(command: str, arguments: list[str]) -> None:
 	if command == "init-secret":
 		path = create_secret_file(SETTINGS.data_dir)
 		print(f"Secret ready at {path}")
+	elif command == "make-cert":
+		if SETTINGS.tls != "selfsigned":
+			raise SystemExit("Set PRICE_CHECKER_MODE=lan and PRICE_CHECKER_TLS=selfsigned first.")
+		ensure_tls_files(SETTINGS, force=True)
+		print(f"Certificate written to {SETTINGS.tls_cert}")
 	elif command == "create-admin":
 		cli_create_admin(arguments)
 	elif command == "reset-password":
 		cli_reset_password(arguments)
 	else:
-		raise SystemExit(f"Unknown command '{command}'. Available: init-secret, create-admin, reset-password")
+		raise SystemExit(f"Unknown command '{command}'. Available: init-secret, create-admin, reset-password, make-cert")
 
 
 init_db()
@@ -1496,14 +1552,4 @@ if __name__ == "__main__":
 		raise SystemExit(0)
 
 	enforce_startup_requirements()
-	host, port = SETTINGS.host, SETTINGS.port
-	ssl_context = (str(SETTINGS.tls_cert), str(SETTINGS.tls_key)) if SETTINGS.tls == "custom" else None
-	server = make_server(host, port, app, ssl_context=ssl_context)
-	threading.Thread(target=check_for_update_background, daemon=True).start()
-
-	if SETTINGS.open_browser:
-		open_app_browser(host, port)
-
-	print(f"Price Checker running in {SETTINGS.mode} mode at {app_url(host, port)}")
-	server.serve_forever()
-	server.server_close()
+	serve(app, SETTINGS, on_ready=start_background_tasks, on_server=register_server)

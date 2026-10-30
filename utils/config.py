@@ -25,6 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LEGACY_DATABASE_PATH = Path(__file__).resolve().parent / "price_checker.sqlite3"
 MODES = ("local", "lan", "public")
 TLS_MODES = ("off", "selfsigned", "custom")
+SERVERS = ("auto", "werkzeug", "waitress", "gunicorn")
 REGISTRATION_MODES = ("admin", "invite", "open")
 LOCAL_HOST = "127.0.0.1"
 LOCAL_HOSTNAMES = ("localhost", "127.0.0.1", "[::1]")
@@ -67,6 +68,9 @@ class Settings:
 	user_daily_api_calls: int = 0
 	global_daily_api_calls: int = 0
 	rechecks_per_hour: int = 0
+	server: str = "auto"
+	threads: int = 8
+	scheduled_scan_hour: int = -1
 
 	@property
 	def is_local(self) -> bool:
@@ -155,9 +159,11 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
 	**PRICE_CHECKER_MODE** = local, lan, public  
 	**PRICE_CHECKER_DATA_DIR** = Directory for the DB, Secrets and certs for Docker  
 	**PRICE_CHECKER_HOST** = LAN mode uses default 0.0.0.0 if not specified, Ignored in local mode  
-	**PRICE_CHECKER_TLS** = off, selfsigned or custom. Only honored in LAN mode, and uses PRICE_CHECKER_TLS_CERT and PRICE_CHECKER_TLS_KEY
-	                    selfsigned is accepted but doesn't start for now.
-                        custom TLS is wired into the server and fails at startup if the files are missing.  
+	**PRICE_CHECKER_TLS** = off, selfsigned or custom. Only honored in LAN mode, and uses PRICE_CHECKER_TLS_CERT and PRICE_CHECKER_TLS_KEY.
+	                    selfsigned creates a certificate in DATA_DIR/certs on first start and reuses it.
+                        custom TLS fails at startup if the files are missing.  
+	**PRICE_CHECKER_SERVER** = auto, werkzeug, waitress or gunicorn. **PRICE_CHECKER_THREADS** sets the worker threads.  
+	**PRICE_CHECKER_SCHEDULED_SCAN_HOUR** = UTC hour (0-23) for an automatic daily scan of every account, -1 (default) is off.
 	**PRICE_CHECKER_TRUSTED_PROXIES** = Tells the middleware exaclty how many hops back to trust,
 	                    stripping out any fake headers injected. defaults to 1
 	"""
@@ -198,6 +204,14 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
 
 	cert = env.get("PRICE_CHECKER_TLS_CERT", "").strip()
 	key = env.get("PRICE_CHECKER_TLS_KEY", "").strip()
+	if tls == "selfsigned" and not (cert and key):
+		# Generated on first start and then reused, so browsers only have to be told to trust it once.
+		cert = str(data_dir / "certs" / "selfsigned.pem")
+		key = str(data_dir / "certs" / "selfsigned.key")
+
+	server = env.get("PRICE_CHECKER_SERVER", "auto").strip().lower() or "auto"
+	if server not in SERVERS:
+		raise ConfigError(f"PRICE_CHECKER_SERVER must be one of: {', '.join(SERVERS)}.")
 	database = env.get("PRICE_CHECKER_DB", "").strip()
 	
 	if database:
@@ -247,6 +261,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
 		user_daily_api_calls=_integer(env, "PRICE_CHECKER_USER_DAILY_API_CALLS", 0 if is_local else 150, 0, 100000),
 		global_daily_api_calls=_integer(env, "PRICE_CHECKER_GLOBAL_DAILY_API_CALLS", 0, 0, 1000000),
 		rechecks_per_hour=_integer(env, "PRICE_CHECKER_RECHECKS_PER_HOUR", 0 if is_local else 20, 0, 10000),
+		server=server,
+		threads=_integer(env, "PRICE_CHECKER_THREADS", 8, 1, 256),
+		scheduled_scan_hour=_integer(env, "PRICE_CHECKER_SCHEDULED_SCAN_HOUR", -1, -1, 23),
 	)
 
 
@@ -268,8 +285,10 @@ def startup_errors(settings: Settings, admin_exists: bool) -> list[str]:
 	if not admin_exists:
 		errors.append("No admin account exists. Create one with `python main.py create-admin`.")
 
-	if settings.tls == "selfsigned":
-		errors.append("PRICE_CHECKER_TLS=selfsigned is not implemented yet; use off or custom.")
+	if settings.tls != "off" and settings.server == "waitress":
+		errors.append("Waitress cannot serve TLS. Use PRICE_CHECKER_SERVER=werkzeug or gunicorn, or turn TLS off and use a reverse proxy.")
+	if settings.server == "gunicorn" and os.name == "nt":
+		errors.append("Gunicorn does not run on Windows. Use PRICE_CHECKER_SERVER=waitress or werkzeug.")
 
 	if settings.mode == "public":
 		if not settings.allowed_hosts:

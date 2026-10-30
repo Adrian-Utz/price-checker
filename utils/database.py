@@ -19,6 +19,7 @@ load_env_file()
 SETTINGS = load_settings()
 DATABASE_PATH = SETTINGS.database_path
 DEV_DATABASE_PATH = SETTINGS.dev_database_path
+BUSY_TIMEOUT_SECONDS = 15
 
 @contextlib.contextmanager
 def connect():
@@ -29,9 +30,10 @@ def connect():
 	which left stale open handles on DATABASE_PATH and blocked database import/replace on Windows.
 	"""
 	DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-	connection = sqlite3.connect(DATABASE_PATH)
+	connection = sqlite3.connect(DATABASE_PATH, timeout=BUSY_TIMEOUT_SECONDS)
 	connection.row_factory = sqlite3.Row
 	connection.execute("PRAGMA foreign_keys = ON")
+	connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_SECONDS * 1000}") #Wait for another writer instead of failing with "database is locked"
 	try:
 		#Yield the connection to the caller
 		yield connection
@@ -52,6 +54,8 @@ def init_db() -> None:
 	'observations' records the observations of prices, curencies, titles, statuses, errors, observed dates, and references to products.
 	"""
 	with connect() as connection:
+		# WAL lets readers and one writer work at the same time. The mode is stored in the file, so this is a one-time switch.
+		connection.execute("PRAGMA journal_mode = WAL")
 		migrate(connection, backup_dir=DATABASE_PATH.parent / "backups")
 
 

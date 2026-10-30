@@ -143,3 +143,32 @@ Budgets and rate limits
 * A scan that hits the limit stops and is marked `stopped`, so it doesn't use up that day's one completed scan.
 * `/recheck-selected` stops at the limit, and `/recheck` reports it.
 The home page shows "N of M calls used" when a limit is set.
+
+### Phase 6:
+
+**What was Added**
+
+Serving Choice
+* Local: werkzeug is now threaded.
+* LAN: waitress or werkzeug when `PRICE_CHECKER_TLS` is on, waitress can't do TLS.
+* Public: gunicorn, with one worke process and `PRICE_CHECKER_THREADS` threads (default to 8). This keeps the SQLite writer, per-user scan locks and scheduler in one process.
+* `python wsgi.py` and `python main.py` both pick the server this way. If you use Docker `gunicorn -c gunicorn.conf.py wsgi:app`
+
+TLS and startup
+* `PRICE_CHECKER_TLS=selfsigned` creates a certificate and key in `DATA_DIR/certs` on the first start and reuses them.
+* The certificate covers localhost, the hostname, the detected LAN IPs and any names in `PRICE_CHECKER_ALLOWED_HOSTS`.
+* `python main.py make-cert` regenerates it, for example: after the LAN IP changes.
+*  Custom certificates are never touched.
+*  Staartup prints the LAN URLs, one per detected address, and notes the self-signed certificate.
+
+Optional daily scan
+* Set `PRICE_CHECKER_SCHEDULED_SCAN_HOUR` to a UTC hour (0-23) to scan every enabled account once a day. (Off by default)
+* Each user still goes through the once-a-day limit, their per-user lock and their API budget.
+
+Also
+* Added a public `/healthz` endpoint that checks the database. It skips the host allowlist so Docker healthchecks work.
+* Added `waitress`, `cryptography`, and `gunicorn`(not on Windows) in the requirements.
+
+Things to know
+* WAL doesn't work well on network filesystems, so keep `DATA_DIR` on a local disk or a Docker volume.
+* `/healthz` sets a session cookie which is harmless.

@@ -17,22 +17,28 @@ MAX_CHART_POINTS = 12
 
 
 def format_observed_at_utc(timestamp: str) -> str:
+	"""Convert a timestamp to UTC format with the required format"""
 	return timestamp.replace("T", " ")[:16] + " UTC"
 
 
 def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | None:
 	"""Generate an SVG line chart for regular and bulk price observations."""
 
+	#Extract price and bulk price data from observations
 	points = [(row["observed_at"], float(row["price"]), float(row["bulk_price"]) if "bulk_price" in row.keys() and row["bulk_price"] is not None else None)
 		for row in observations if row["price"] is not None]
 
+	#if no valid observations are found
 	if not points:
 		return None
 
+	#Extract bulk price coordinates if available
 	bulk_points = [(index, observed_at, bulk_price) for index, (observed_at, _price, bulk_price) in enumerate(points) if bulk_price is not None]
+	#Set chart Dimensions
 	height = 180
 	left, right, top, bottom = 52, 12, 12, 18
 	plot_width, plot_height = width - left - right, height - top - bottom
+	#Calculate the price range and tick interval
 	prices = [price for _, price, _ in points]
 	prices.extend(price for _, _, price in bulk_points)
 	minimum, maximum = min(prices), max(prices)
@@ -40,18 +46,24 @@ def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | N
 	intervals = (0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000)
 	tick_interval = next((interval for interval in intervals if interval >= target_interval), None)
 
+	#if no sutable tick interval is found, use the target interval
 	if tick_interval is None:
 		tick_interval = math.ceil(target_interval / 5000) * 5000
 
+	#Calculate lower and upper bouncs for the price scale
 	lower_bound = math.floor(minimum / tick_interval) * tick_interval
 	upper_bound = math.ceil(maximum / tick_interval) * tick_interval
 
+	# Adjust bounds up they are equal
 	if lower_bound == upper_bound:
 		lower_bound -= tick_interval
 		upper_bound += tick_interval
 
+	# Calculate the number of tick marks
 	tick_count = math.ceil((upper_bound - lower_bound) / tick_interval)
+	#Calculate the final upper bound
 	upper_bound = lower_bound + tick_count * tick_interval
+	#Calculate the spread and coordinates
 	spread = upper_bound - lower_bound
 	coordinates = []
 
@@ -67,6 +79,7 @@ def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | N
 		y = top + plot_height - ((price - lower_bound) / spread * plot_height)
 		bulk_coordinates.append((x, y, observed_at, price))
 
+	# Generate SVG line paths for regular and bulk prices
 	line = " ".join(f"{x:.1f},{y:.1f}" for x, y, _, _ in coordinates)
 	marks = []
 
@@ -80,18 +93,18 @@ def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | N
 	for x, y, observed_at, price in bulk_coordinates:
 		observed_date = format_observed_at_utc(observed_at)
 		bulk_marks.append(f'<circle class="bulk-price-point" cx="{x:.1f}" cy="{y:.1f}" r="4" tabindex="0"><title>Bulk price ${price:,.2f} on {observed_date}</title></circle>')
-
+	#Generate SVG line paths for bulk prices
 	bulk_series = (
 		f'<polyline class="bulk-price-line" points="{bulk_line}" fill="none" stroke="var(--lg-bulk-line, #d46b36)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'
 		if bulk_coordinates else ""
 	)
-
+	#Generate SVG legend
 	legend = (
 		f'<g class="chart-legend" font-size="8"><line x1="{left + 8}" y1="8" x2="{left + 20}" y2="8" stroke="var(--lg-main-line)" stroke-width="2"/><text x="{left + 23}" y="11" fill="#6c756b">Price</text>'
 		f'<line x1="{left + 62}" y1="8" x2="{left + 74}" y2="8" stroke="var(--lg-bulk-line, #d46b36)" stroke-width="2"/><text x="{left + 77}" y="11" fill="#6c756b">Bulk price</text></g>'
 		if bulk_coordinates else ""
 	)
-
+	#Generate SVG y-axis ticks
 	axis_y = top + plot_height
 	y_axis_ticks = []
 	for index in range(tick_count + 1):
@@ -101,7 +114,7 @@ def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | N
 			f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" stroke="#e2e4d9" stroke-width="1"/>'
 			f'<text x="{left - 6}" y="{y + 3:.1f}" fill="#6c756b" font-size="9" text-anchor="end">${price:,.2f}</text>'
 		)
-
+	# Generate SVG x-axis lables
 	date_indexes = sorted({0, len(coordinates) // 2, len(coordinates) - 1})
 	x_axis_labels = []
 	for index in date_indexes:
@@ -116,7 +129,7 @@ def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | N
 		x_axis_labels.append(
 			f'<text x="{x:.1f}" y="{height - 4}" fill="#6c756b" font-size="9" text-anchor="{anchor}">{observed_date}</text>'
 		)
-
+	#Return the SVG chart markup
 	return Markup(
 		f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Price history with {len(points)} observations">'
 		f'{"".join(y_axis_ticks)}<line x1="{left}" y1="{top}" x2="{left}" y2="{axis_y}" stroke="#9ca597" stroke-width="1"/>'
@@ -128,23 +141,28 @@ def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | N
 
 def chart_observations_in_range(observations: list[sqlite3.Row], start_date: date, end_date: date) -> list[sqlite3.Row]:
 	"""Keep observations inside a date range, then retain its largest price movements."""
+	
+	#If no observations return an empty list
 	if not observations:
 		return []
-	
+
+	#Filter observations to keep only those within the specified date range
 	ranged = [
 		row for row in observations
 		if start_date <= datetime.fromisoformat(row["observed_at"]).date() <= end_date
 	]
 
+	#if the number of observations in the range is less than or equal to the max, return the range
 	if len(ranged) <= MAX_CHART_POINTS:
 		return ranged
 
+	# Calculate the absolute differences between consecutive price observations.
 	movements = [
 		(abs(float(ranged[index]["price"]) - float(ranged[index - 1]["price"])), index)
 		for index in range(1, len(ranged) - 1)
 		if float(ranged[index]["price"]) != float(ranged[index - 1]["price"])
 	]
-
+	# Calculate the absolute differences between consecutive bulk price observations.
 	bulk_movements = [
 		(abs(float(ranged[index]["bulk_price"]) - float(ranged[index - 1]["bulk_price"])), index)
 		for index in range(1, len(ranged) - 1)
@@ -152,9 +170,10 @@ def chart_observations_in_range(observations: list[sqlite3.Row], start_date: dat
 		and ranged[index]["bulk_price"] is not None and ranged[index - 1]["bulk_price"] is not None
 		and float(ranged[index]["bulk_price"]) != float(ranged[index - 1]["bulk_price"])
 	]
-
+	#Create a set to store indexes that will be retained
 	indexes = {0, len(ranged) - 1}
-	
+	#add the indexes of the largest prive movements to the set
 	for _change, index in sorted(movements + bulk_movements, reverse=True)[:MAX_CHART_POINTS - 2]:
 		indexes.add(index)
+	#return a list of ovservations with the indexes that were retained.
 	return [ranged[index] for index in sorted(indexes)]

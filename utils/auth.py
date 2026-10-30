@@ -45,24 +45,32 @@ def authenticate(connection: sqlite3.Connection, username: str, password: str, *
 	Every failure looks the same to the caller. A locked account isn't checked at all, so guessing
 	can't continue during the lockout.
 	"""
+	#Query the database for the user with the given username
 	user = connection.execute(
 		"SELECT id, username, role, disabled, session_version, password_hash, locked_until FROM users WHERE username = ? AND username != ?",
 		(username.strip(), LOCAL_USERNAME),
 	).fetchone()
+	#If user is not found or is locked, or has an unusable password return none.
 	if user is None or user["password_hash"] == UNUSABLE_PASSWORD_HASH or user["disabled"]:
 		_burn_password_check(password)
 		return None
+	#if user is locked return none
 	if user["locked_until"] and user["locked_until"] > utc_text():
 		_burn_password_check(password)
 		return None
+	#Check if the provided password matches the stored password hash
 	if check_password_hash(user["password_hash"], password):
+		#Reset the failed login count and unlock the user if they have made a successful login
 		connection.execute(
 			"UPDATE users SET failed_logins = 0, locked_until = NULL, last_login_at = ? WHERE id = ?",
 			(utc_text(), user["id"]),
 		)
 		return user
+	#Increment the failed login count for the user
 	connection.execute("UPDATE users SET failed_logins = failed_logins + 1 WHERE id = ?", (user["id"],))
+	#fetch the current failed login count for the user
 	failures = connection.execute("SELECT failed_logins FROM users WHERE id = ?", (user["id"],)).fetchone()[0]
+	# If the failed login count reaches the maximum, lock the user for a specified period.
 	if failures >= max_failures:
 		locked_until = utc_text(datetime.now(timezone.utc) + timedelta(minutes=lockout_minutes))
 		connection.execute("UPDATE users SET failed_logins = 0, locked_until = ? WHERE id = ?", (locked_until, user["id"]))
@@ -137,15 +145,20 @@ def list_users(connection: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def _hash_token(token: str) -> str:
+	"""Hash a token using SHA-256"""
 	return hashlib.sha256(token.encode()).hexdigest()
 
 
 def create_invite(connection: sqlite3.Connection, created_by: int, hours: int) -> str:
 	"""Create a single-use invite link token. Only its hash is stored, so it can't be shown again."""
+	#Check if the number of hours is wthin the valid range
 	if not 1 <= hours <= INVITE_MAX_HOURS:
 		raise ValueError(f"Invites last between 1 hour and {INVITE_MAX_HOURS} hours.")
+	#generate a 24-character URL-safe token
 	token = secrets.token_urlsafe(24)
+	#Get the current UTC time
 	now = datetime.now(timezone.utc)
+	#insert the invide into the database with its token hash, creator ID, creation time, and expiration time
 	connection.execute(
 		"INSERT INTO invites (token_hash, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)",
 		(_hash_token(token), created_by, utc_text(now), utc_text(now + timedelta(hours=hours))),
@@ -155,8 +168,11 @@ def create_invite(connection: sqlite3.Connection, created_by: int, hours: int) -
 
 def find_invite(connection: sqlite3.Connection, token: str) -> sqlite3.Row | None:
 	"""The invite for a token if it is unused, not revoked and not expired."""
+	#Check if the token is provided
 	if not token:
 		return None
+	# Execute the SQL query to find the invide
+	#Check if the token hash matches, if the invite is not userd, not revoked, and not expired
 	return connection.execute(
 		"SELECT id FROM invites WHERE token_hash = ? AND used_at IS NULL AND revoked = 0 AND expires_at > ?",
 		(_hash_token(token), utc_text()),
@@ -168,13 +184,17 @@ def accept_invite(connection: sqlite3.Connection, token: str, username: str, pas
 	invite = find_invite(connection, token)
 	if invite is None:
 		raise ValueError("This invite link is invalid or has expired.")
+	#Create a new user account with the provided username and password
 	user_id = create_user(connection, username, password, "user")
+	#update the invite record to mark it as used
 	claimed = connection.execute(
 		"UPDATE invites SET used_by = ?, used_at = ? WHERE id = ? AND used_at IS NULL",
 		(user_id, utc_text(), invite["id"]),
 	)
+	#Check if the update was successful
 	if claimed.rowcount != 1:
 		raise ValueError("This invite link is invalid or has expired.")
+	#Return the ID of the newly created user
 	return user_id
 
 
