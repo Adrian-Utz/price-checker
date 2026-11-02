@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 from urllib.parse import unquote, urlparse, urlsplit
-from flask import Flask, Response, abort, g, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, Response, abort, g, has_request_context, redirect, render_template, request, send_file, session, url_for
 
 from version import VERSION_NUMBER
 from api_clients.serpapi_client import SerpApiClient, product_bulk_price as serpapi_bulk_price, product_candidates, product_price as serpapi_product_price
@@ -59,6 +59,7 @@ from utils.database import (
 	DATABASE_PATH,
 	DEV_DATABASE_PATH,
 	admin_exists,
+	backup_database,
 	connect,
 	connect_dev,
 	init_db,
@@ -103,7 +104,12 @@ try:
 	SETTINGS = load_settings()
 except ConfigError as error:
 	raise SystemExit(f"Configuration error: {error}")
+if not SETTINGS.is_local:
+	# Shared servers keep the admin's provider choice on the data volume; API keys come from the environment.
+	ENV_FILE = SETTINGS.data_dir / ".env"
+	load_dotenv(ENV_FILE, override=True)
 DEVELOPER_MODE = SETTINGS.allow_dev_tools
+DEV_RESPONSE_KEEP = 1000 #Saved API responses kept in hosted modes
 MAX_URLS = max(20, min(int(os.environ.get("PRICE_CHECKER_MAX_URLS", "100")), 100)) #Change this variable if you want to track more items.
 CACHE_HOURS = max(1, int(os.environ.get("PRICE_CHECKER_CACHE_HOURS", "24")))
 MIN_DELAY_SECONDS = max(1.0, float(os.environ.get("PRICE_CHECKER_MIN_DELAY", "4")))
@@ -155,9 +161,26 @@ def check_for_update_background() -> None:
 		update_info["latest_version"] = latest
 
 
+def user_has_dev_access(user_id: int) -> bool:
+	"""Developer tools: the PRICE_CHECKER_DEVELOPER_MODE flag in local mode, every administrator in LAN and public mode."""
+	if SETTINGS.is_local:
+		return DEVELOPER_MODE
+	with connect() as connection:
+		row = connection.execute("SELECT role FROM users WHERE id = ? AND disabled = 0", (user_id,)).fetchone()
+	return row is not None and row["role"] == "admin"
+
+
+def dev_access() -> bool:
+	"""Same as user_has_dev_access, for the signed-in user of the current request."""
+	return DEVELOPER_MODE if SETTINGS.is_local else is_admin()
+
+
 def record_dev_api_responses(url: str, provider: str, responses: list[dict[str, object]], error: str | None = None) -> None:
-	"""Record the entire json responce if instance is in dev mode"""
-	if not DEVELOPER_MODE:
+	"""Record the entire json responce for developers. Scheduled scans have no signed-in admin, so they aren't recorded."""
+	if SETTINGS.is_local:
+		if not DEVELOPER_MODE:
+			return
+	elif not (has_request_context() and is_admin()):
 		return
 	with connect_dev() as connection:
 		for response in responses:
@@ -170,6 +193,8 @@ def record_dev_api_responses(url: str, provider: str, responses: list[dict[str, 
 				"INSERT INTO api_responses (observed_at, url, provider, response_json, error) VALUES (?, ?, ?, ?, ?)",
 				(utc_now().isoformat(), url, provider, None, error),
 			)
+		if not SETTINGS.is_local: #A server runs for a long time, so keep only the newest responses
+			connection.execute("DELETE FROM api_responses WHERE id NOT IN (SELECT id FROM api_responses ORDER BY id DESC LIMIT ?)", (DEV_RESPONSE_KEEP,))
 
 
 def _find_json_field(value: object, field_names: tuple[str, ...], path: str = "$") -> tuple[str | None, object]:
@@ -396,6 +421,8 @@ def api_usage_summary() -> dict[str, int | float | None]:
 
 def read_env_file_text() -> str:
 	if not ENV_FILE.exists():
+		if not SETTINGS.is_local:
+			return "" #Never write blank API keys over the ones set in the environment
 		return "SERPAPI_API_KEY=\nUNWRANGLE_API_KEY=\nAPIFY_API_TOKEN=\n"
 	return ENV_FILE.read_text(encoding="utf-8")
 
@@ -406,6 +433,7 @@ def save_env_file_text(content: str) -> None:
 		raise ValueError("Invalid .env content.")
 	#fixed `normilized` as it was causing blank lines.
 	normalized = content.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n") + "\n"
+	ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
 	ENV_FILE.write_text(normalized, encoding="utf-8")
 	load_dotenv(ENV_FILE, override=True)
 	invalidate_api_usage()
@@ -450,6 +478,8 @@ def inject_security_context() -> dict:
 	return {
 		"csp_nonce": g.get("csp_nonce", ""),
 		"auto_shutdown": SETTINGS.is_local and auto_server_shutdown,
+		"mode_label": {"lan": "LAN mode", "public": "Public mode"}.get(SETTINGS.mode),
+		"connection_warnings": connection_warnings(),
 	}
 
 
@@ -472,16 +502,43 @@ def add_security_headers(response):
 
 
 def api_budget_view(user_id: int) -> dict | None:
-	if not SETTINGS.user_daily_api_calls:
+	if not SETTINGS.user_daily_api_calls or user_has_dev_access(user_id):
 		return None
 	with connect() as connection:
 		return {"used": calls_today(connection, user_id), "limit": SETTINGS.user_daily_api_calls}
 
 
+def quota_view(user_id: int, product_count: int) -> dict:
+	"""What this user has used of each limit, for the quota panel. A limit of 0 means unlimited and is shown as None."""
+	quota = {"products": {"used": product_count, "limit": MAX_URLS}, "api": api_budget_view(user_id), "rechecks": None}
+	if SETTINGS.rechecks_per_hour and not dev_access():
+		with connect() as connection:
+			used = auth.attempts_in_window(connection, str(user_id), "recheck", 3600)
+		quota["rechecks"] = {"used": min(used, SETTINGS.rechecks_per_hour), "limit": SETTINGS.rechecks_per_hour}
+	for item in quota.values():
+		if item:
+			item["percent"] = min(100, round(100 * item["used"] / item["limit"])) if item["limit"] else 0
+	return quota
+
+
+def connection_warnings() -> list[str]:
+	"""Warnings about how this page reached the user. Nothing is shown for local mode."""
+	if SETTINGS.is_local:
+		return []
+	warnings = []
+	if SETTINGS.mode == "lan" and SETTINGS.tls == "off":
+		warnings.append("This connection is not encrypted. Passwords and watchlists cross your network in plain text. Only use it on a network you trust, or ask the administrator to enable TLS.")
+	elif SETTINGS.mode == "lan" and SETTINGS.tls == "selfsigned":
+		warnings.append("This server uses a self-signed certificate. Your browser's warning is expected, but only continue if you reached this address on purpose.")
+	if SETTINGS.mode == "public" and not request.is_secure:
+		warnings.append("This page was not delivered over HTTPS. Check the reverse proxy: sign-in is unsafe until it forwards X-Forwarded-Proto.")
+	return warnings
+
+
 def recheck_limited():
 	"""Per-user cap on re-check requests per hour. Returns a redirect when the user is over it, else None."""
 	limit = SETTINGS.rechecks_per_hour
-	if not limit:
+	if not limit or dev_access():
 		return None
 	identity = str(current_user_id())
 	with connect() as connection:
@@ -582,7 +639,7 @@ def run_scan(user_id: int) -> bool:
 		user_id=user_id,
 		connect=connect,
 		utc_now=utc_now,
-		developer_mode=DEVELOPER_MODE,
+		developer_mode=user_has_dev_access(user_id),
 		cache_is_fresh=cache_is_fresh,
 		min_delay_seconds=MIN_DELAY_SECONDS,
 		refresh_product=refresh_product,
@@ -591,10 +648,13 @@ def run_scan(user_id: int) -> bool:
 
 def refresh_product(product: sqlite3.Row) -> None:
 	# Reserve the credit before fetching: a failed fetch would otherwise overwrite the stored price with an error.
+	# Administrators' calls are still counted, but never refused (a limit of 0 means unlimited).
+	unlimited = user_has_dev_access(product["user_id"])
 	with connect() as connection:
 		reserve_api_call(
 			connection, product["user_id"],
-			user_limit=SETTINGS.user_daily_api_calls, global_limit=SETTINGS.global_daily_api_calls,
+			user_limit=0 if unlimited else SETTINGS.user_daily_api_calls,
+			global_limit=0 if unlimited else SETTINGS.global_daily_api_calls,
 		)
 	_refresh_product(
 		product,
@@ -608,7 +668,7 @@ def scan_allowed(user_id: int) -> bool:
 	return _scan_allowed(
 		user_id=user_id,
 		connect=connect,
-		developer_mode=DEVELOPER_MODE,
+		developer_mode=user_has_dev_access(user_id),
 		local_calendar_date=local_calendar_date,
 	)
 
@@ -983,13 +1043,13 @@ def index():
 		is_admin=is_admin(),
 		current_username=current_user()["username"],
 		accounts_enabled=not SETTINGS.is_local,
-		api_budget=api_budget_view(user_id),
+		quota=quota_view(user_id, len(products)),
 		serpapi_ready=serpapi_ready(), 
 		unwrangle_ready=unwrangle_ready(), 
 		apify_ready=apify_ready(),
 		api_provider=api_provider(), 
 		provider_is_ready=provider_ready(api_provider()), 
-		developer_mode=DEVELOPER_MODE, 
+		developer_mode=dev_access(), 
 		version_number=VERSION_NUMBER, 
 		env_file_text=read_env_file_text() if edit_env else "",
 		edit_env=edit_env,
@@ -1004,7 +1064,7 @@ def index():
 
 @app.get("/dev/responses")
 def dev_responses():
-	if not DEVELOPER_MODE or not SETTINGS.is_local:
+	if not dev_access():
 		abort(404)
 	with connect_dev() as connection:
 		rows = connection.execute(
@@ -1028,7 +1088,7 @@ def dev_responses():
 @app.post("/dev/responses/<int:response_id>/replay")
 def replay_dev_response_route(response_id: int):
 	"""Replay and show what data is getting pulled from the responce. No API credits are used"""
-	if not DEVELOPER_MODE or not SETTINGS.is_local:
+	if not dev_access():
 		abort(404)
 	with connect_dev() as connection:
 		rows = connection.execute(
@@ -1205,7 +1265,7 @@ def recheck_url(product_id: int):
 	with connect() as connection:
 		product = owned_product(connection, product_id)
 
-	if not DEVELOPER_MODE and not product["error"]:
+	if not dev_access() and not product["error"]:
 		return redirect(url_for("index", message="Re-check is only available for items whose last check failed."))
 
 	limited = recheck_limited()
@@ -1520,6 +1580,9 @@ def run_cli_command(command: str, arguments: list[str]) -> None:
 	if command == "init-secret":
 		path = create_secret_file(SETTINGS.data_dir)
 		print(f"Secret ready at {path}")
+	elif command == "backup":
+		keep = int(arguments[0]) if arguments and arguments[0].isdigit() else 14
+		print(f"Backup written to {backup_database(keep)}")
 	elif command == "make-cert":
 		if SETTINGS.tls != "selfsigned":
 			raise SystemExit("Set PRICE_CHECKER_MODE=lan and PRICE_CHECKER_TLS=selfsigned first.")
@@ -1530,11 +1593,11 @@ def run_cli_command(command: str, arguments: list[str]) -> None:
 	elif command == "reset-password":
 		cli_reset_password(arguments)
 	else:
-		raise SystemExit(f"Unknown command '{command}'. Available: init-secret, create-admin, reset-password, make-cert")
+		raise SystemExit(f"Unknown command '{command}'. Available: init-secret, create-admin, reset-password, make-cert, backup")
 
 
 init_db()
-if DEVELOPER_MODE:
+if DEVELOPER_MODE or not SETTINGS.is_local:
 	init_dev_db()
 
 

@@ -1,169 +1,184 @@
 # Price Checker
 
-A local flask app for maintaining a product watchlist and checking prices once per day. It uses SerpApi's, Unwrangle's, and Apify's product lookups, SQLite history, conservative request pacing, and cached results.
+A Flask app for keeping a product watchlist and checking prices once a day. It uses SerpApi, Unwrangle and Apify product lookups, stores history in SQLite, and paces its requests.
+
+It runs three ways:
+
+| Mode | For | Accounts | Server |
+|---|---|---|---|
+| **local** (default) | Just you, on your own computer | None | Flask / werkzeug |
+| **lan** | Your household or office network, over HTTP or HTTPS | Yes | waitress, or werkzeug for TLS |
+| **public** | The internet, behind an HTTPS reverse proxy (Docker + Caddy) | Yes | gunicorn |
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 10/19/2026  
-**Latest Version:** 0.0.10
+**Last Update on:** 11/2/2026  
+**Latest Version:** 0.1.0
 
 ## Main Capabilities
-1. Allow the user to input up to 20-100 URLs. (Customizable)
-2. API Lookup  
-	2a. Look up Walmart and Home Depot products through SerpApi engines.  
-	2b. Look up Walmart, Home Depot, Lowes, Ace Hardware, and Sam's Club items with Unwrangle's engines. Lowes store-specific lookups require the store number, ZIP code, and state together.  
-	2c. Look up Lowes items through Apify's Lowes Product Lookup actor (by product ID and ZIP code).
-4. Keep current results and historical observations in SQLite.
-5. Restrict the user to one completed scan per local calendar day, resetting at local midnight.
-6. Space requests with a minimum delay and randomized jitter.
-7. Cache successful or failed URL checks for 24 hours by default. (Resets at midnight)
-8. Export the watchlist and its saved price history as JSON or CSV.
-9. Shut down the local server after the app tab is closed.
-10. Import a saved watchlist file to check it.
-11. Dev Mode.
-12. Creates a line graph for viewing an item's history.
 
+1. Track up to 20-100 URLs per user. (Customizable)
+2. API lookup:
+	- Walmart and Home Depot through SerpApi.
+	- Walmart, Home Depot, Lowes, Ace Hardware and Sam's Club through Unwrangle. Lowes store-specific lookups need the store number, ZIP code and state together.
+	- Lowes through Apify's Lowes Product Lookup actor (by product ID and ZIP code).
+3. Keep current results and price history in SQLite, with a line graph per item.
+4. One completed scan per day per user, with randomized request delays and a 24-hour result cache.
+5. Export your watchlist and history as JSON or CSV, and import a saved watchlist into your own account (it merges, nothing is replaced).
+6. Multiple user accounts in LAN and public modes, with an admin page, invites, lockout and rate limiting.
+7. Per-user daily API budgets and hourly re-check limits so one user can't drain a paid API.
+8. Developer tools for debugging API responses (local developer mode, or any administrator in LAN and public modes).
 
-## Setting up a Virtual Environment
+## Quick start (local mode)
 
-Setting up a virtual environment using Windows Powershell. (Not required but recommended)
-1. In the directory you put the program: 
 ```powershell
 python -m venv .venv
-```
-2. Then: 
-```powershell
 .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python main.py
 ```
-3. Install dependancies: 
+
+On Linux or macOS use `python3 -m venv .venv`, `source .venv/bin/activate`, then the same `pip` and `python main.py` commands. On Debian/Ubuntu you may first need `sudo apt install python3 python3-venv python3-pip`.
+
+The app opens `http://127.0.0.1:5000` in your browser. In local mode there are no accounts, and the server stops shortly after you close the tab.
+
+Your data lives in `price_checker.sqlite3` in the `utils` folder. Set `PRICE_CHECKER_DB` or `PRICE_CHECKER_DATA_DIR` to put it elsewhere. The daily scan limit resets at midnight on the computer's clock, while observation timestamps are stored in UTC.
+
+Optional settings: `PRICE_CHECKER_MAX_URLS` (20-100), `PRICE_CHECKER_CACHE_HOURS`, `PRICE_CHECKER_MIN_DELAY`, `PRICE_CHECKER_LOCATION` (a ZIP or city/state for regional results) and `PRICE_CHECKER_PORT` (or `PORT`).
+
+## LAN mode
+
+For a home or office network. Create the secret and the first admin, then start:
+
 ```powershell
-python -m pip install -r requirements.txt
-```
-4. Run the file: 
-```powershell
+$env:PRICE_CHECKER_MODE = "lan"
+python main.py init-secret
+python main.py create-admin yourname
 python main.py
 ```
 
-## Run on Linux
+LAN and public modes refuse to start without a persistent secret and an admin account. The first admin you create adopts any watchlist you already had.
 
-1. Open terminal and install the basic python files and pip installer:
-```terminal
-sudo apt update
-sudo apt install python3 python3-venv python3-pip git
-```
-2. Download files, extract them, and move to the price-checker-main directory
-3. Create a virtual environment, download depencies, and create an .env
-```terminal
-python3 -m venv .venv 
-source .venv/bin/activate
-```
-```terminal
-python -m pip install -r requirements.txt
-```
-```terminal
-python main.py
+- It listens on `0.0.0.0:5000` and prints the URL(s) other devices should use.
+- HTTP is the default. Set `PRICE_CHECKER_TLS=selfsigned` for HTTPS with an automatically generated certificate (browsers will warn once), or `PRICE_CHECKER_TLS=custom` with `PRICE_CHECKER_TLS_CERT` and `PRICE_CHECKER_TLS_KEY`. Plain HTTP sends passwords unencrypted, so the app shows a warning banner.
+- `python main.py make-cert` regenerates the self-signed certificate, for example after your LAN IP changes.
+
+## Public mode (Docker)
+
+For the internet. Docker Compose runs the app behind Caddy, which gets HTTPS certificates automatically. Create the admin **before** the first start:
+
+```bash
+cp .env.example .env          # set DOMAIN and your API keys
+docker compose run --rm app python main.py create-admin yourname
+docker compose up -d
+docker compose ps             # the app should show "healthy"
 ```
 
-## Run Locally
+There is also a systemd unit for running without Docker. See [docs/deployment.md](docs/deployment.md) for the full guide: systemd, the ufw firewall, router port forwarding, Cloudflare Tunnel, Tailscale, and backing up the SQLite database.
 
-1. Create and activate a virtual environment. (Not required but recommended.)
-2. Install dependencies: 
-```cmd
-python -m pip install -r requirements.txt
-```
-3. Start the app: 
-```cmd 
-python main.py
-```
-4. The app automatically opens `http://127.0.0.1:5000` in your default browser.
+> The Docker, Caddy, Cloudflare Tunnel and Tailscale setups have only been checked by automated tests and CI, not on a live server. Check `docker compose ps` and your first login after deploying.
 
+## Accounts and administration
 
-The database is created as `price_checker.sqlite3` beside `main.py`. Set `PRICE_CHECKER_DB` to choose another location. Optional settings are `PRICE_CHECKER_MAX_URLS` (20-100), `PRICE_CHECKER_CACHE_HOURS`, `PRICE_CHECKER_MIN_DELAY`, `PRICE_CHECKER_LOCATION` (a ZIP code or city/state used for regional retailer results), and `PORT`. The daily scan limit resets at midnight according to the computer's local timezone; observation timestamps remain stored in UTC.
+- Sign in at `/login`. Sessions end after 120 minutes idle, and "Keep me signed in" lasts 30 days (`PRICE_CHECKER_REMEMBER_DAYS=0` turns it off).
+- Administrators open **Users** to create accounts, disable them, reset passwords, change roles and make invite links.
+- `PRICE_CHECKER_REGISTRATION` is `admin` (default, no sign-up page), `invite` (single-use links) or `open`.
+- Passwords are 10 to 256 characters with no complexity rules. Five failed logins lock an account for 15 minutes, and each address is rate limited.
+- Command line: `python main.py create-admin [name]`, `python main.py reset-password [name]`, `python main.py backup [keep]`. In Docker, use `docker compose exec app python main.py ...`. For scripts, set `PRICE_CHECKER_ADMIN_PASSWORD` instead of typing the password.
+- API keys and the provider are server-wide and admin-managed. Regular users see only their own limits.
 
-For local API troubleshooting, set `PRICE_CHECKER_DEVELOPER_MODE=1`. Developer mode disables the daily scan limit, shows Re-check for every product, and records each JSON API response in a separate `price_checker.dev.sqlite3` database. Set `PRICE_CHECKER_DEV_DB` to choose another developer database path. Leave developer mode unset or set it to `0` for normal behavior; regular users can only Re-check products whose previous request failed.
+Other hosted-mode settings: `PRICE_CHECKER_ALLOWED_HOSTS` (required in public mode), `PRICE_CHECKER_TRUSTED_PROXIES`, `PRICE_CHECKER_USER_DAILY_API_CALLS` (default 150), `PRICE_CHECKER_GLOBAL_DAILY_API_CALLS`, `PRICE_CHECKER_RECHECKS_PER_HOUR` (default 20), `PRICE_CHECKER_THREADS`, and `PRICE_CHECKER_SCHEDULED_SCAN_HOUR`. See [.env.example](.env.example) and [docs/deployment.md](docs/deployment.md). Shutdown-on-tab-close, browser auto-open, `/shutdown` and the `.env` editor exist only in local mode. Administrators get the developer tools in every mode (see below).
 
-SerpApi requests wait up to 90 seconds by default. Set `SERPAPI_TIMEOUT_SECONDS` if your network is slower, for example `$env:SERPAPI_TIMEOUT_SECONDS = "120"`. The app does not automatically retry a timed-out request because SerpApi may already count it as a search.
+## API providers
 
-When the browser tab unloads, the app sends a local shutdown signal and exits after a short grace period. This also applies to a refresh or navigation if no new app request arrives during that grace period.
+The buttons at the top of the page set the global provider (admins only in hosted modes). To pin one item to a provider, click its retailer button in the watchlist and choose **API for this item**. Only providers that support that retailer are offered.
 
-### Supported Api providers
-The provider buttons at the top of the page set the global provider. To pin a single item to one provider, click its retailer button in the watchlist and choose **API for this item**. That item then always uses the chosen provider on every check, and choosing the global option clears the pin. Only providers that support the item's retailer are offered.
-
-#### SerpApi
-**Free Monthly Plan**  
-Create a SerpApi account and set your API key in environment variables. Or, for a quick setup, create a file named `.env` beside `main.py` with this content:
+Set your keys as environment variables, or in a `.env` file beside `main.py` (in hosted modes, `DATA_DIR/.env`):
 
 ```dotenv
 SERPAPI_API_KEY=your-key-here
 UNWRANGLE_API_KEY=your-key-here
 APIFY_API_TOKEN=your-token-here
-PRICE_CHECKER_DEVELOPER_MODE='0'
-PRICE_CHECKER_API_PROVIDER=serpapi-or-unwrangle
+PRICE_CHECKER_API_PROVIDER=auto
 ```
 
-#### Unwrangle
-**Free Trial**  
-Create a Unwrangle account and set your API key in evironment variables. Or, for a quick setup, create a file named `.env` beside `main.py` with this content:
+`PRICE_CHECKER_API_PROVIDER` is `auto`, `serpapi`, `unwrangle` or `apify`. In `auto`, SerpApi handles retailers it supports, Apify handles Lowes when a token is set, and Unwrangle handles the rest.
+
+**SerpApi** has a free monthly plan. Requests wait up to 90 seconds; raise `SERPAPI_TIMEOUT_SECONDS` on a slow network. Timed-out requests are not retried automatically because SerpApi may already have counted them.
+
+**Unwrangle** has a free trial of 100 credits. (Not renuable)
+
+**Apify** is pay-per-product (about $5 per 1,000 lookups; free accounts are limited). Copy your token from the Apify Console (Settings > API & Integrations). Optional settings:
 
 ```dotenv
-SERPAPI_API_KEY=your-key-here
-UNWRANGLE_API_KEY=your-key-here
-APIFY_API_TOKEN=your-token-here
-PRICE_CHECKER_DEVELOPER_MODE='0'
-PRICE_CHECKER_API_PROVIDER=serpapi-or-unwrangle-or-apify
-```
-
-#### Apify
-**Pay per product (about $5 per 1,000 lookups; free accounts are limited)**  
-Currently supports Lowes through the [Lowes Product Lookup](https://apify.com/maplerope44/lowes-product-lookup) actor. Create an Apify account, copy your API token from the Apify Console (Settings > API & Integrations), and add it to your `.env`:
-
-```dotenv
-APIFY_API_TOKEN=your-token-here
 APIFY_LOWES_ZIP=22902
 APIFY_TIMEOUT_SECONDS=180
 ```
 
-The actor looks products up by product ID (taken from the Lowes URL) and a 5-digit ZIP code. The ZIP comes from the saved store's ZIP, or `APIFY_LOWES_ZIP` if none is saved. If a store ID is saved it uses that store, otherwise the nearest store. `APIFY_TIMEOUT_SECONDS` is optional (120-300). When Lowes hides the single-unit price, the returned price is shown as a bulk price. In `Auto` mode, Lowes uses Apify when a token is set and falls back to Unwrangle otherwise.
+The actor looks products up by product ID (from the Lowes URL) and a 5-digit ZIP, which comes from the saved store or `APIFY_LOWES_ZIP`. When Lowes hides the single-unit price, the returned price is shown as a bulk price.
 
-**Notice**  
-Keep the `.env` file private do not share your personal API key. If you think your key has been leaked, quickly go to your dashboard and change it.
+**Keep your keys private.** Never share the `.env` file. If a key leaks, change it on the provider's dashboard right away.
 
-## Uploading your database  
-The price checker accepts user made databases from the following filetypes: .json, .csv, .sqlite3, .sqlite, and .db.  
-**CSV upload**: The imported file requires at least a `url` column. If `url` is missing, it should reject the file.  
-**JSON upload**: The JSON must be an object with a top-level `"products"` list. Each product row should still include a `url` value, because the app skips rows without one during import.  
-**SQLite upload**: The file must be a valid SQLite database and contain a `products` table. There is no stricter per-column requirement check for the database upload itself.  
+## Developer mode
+
+In local mode, set `PRICE_CHECKER_DEVELOPER_MODE=1`. In LAN and public modes, every administrator always has it. It disables the daily scan limit, shows Re-check on every product, and saves each raw API response to `price_checker.dev.sqlite3` (`PRICE_CHECKER_DEV_DB` changes the path; the newest 1000 are kept in hosted modes). The **API response lab** lets you browse the latest 100 responses and replay one offline. In hosted modes administrators also skip the per-user API budget and re-check limit (their calls are still counted), non-admins get a 404 for the lab, and the lab shows every user's product URLs. Scheduled scans are not recorded.
+
+## Importing and exporting
+
+Export from the page as JSON or CSV. Import accepts `.json`, `.csv` and `.sqlite3`, and merges into **your** watchlist: products you already track only gain missing price history, new products are added, and the per-user limit still applies.
+
+- **CSV** needs at least a `url` column.
+- **JSON** must be an object with a top-level `"products"` list; each product needs a `url`.
+- **SQLite** files must hold a `products` table and are opened read-only.
+- A file may hold at most 1,000 products and 20,000 price records per product.
+
+Exporting the raw SQLite file is only available in local mode, because that file holds every account's data.
+
+## Tests
+
+```powershell
+.\.venv\Scripts\python -m pytest -q
+```
+
+See [tests/README.md](tests/README.md) for running single files or tests. CI (`.github/workflows/ci.yml`) runs the suite and a Docker build smoke test.
 
 ## Files
+
 ```
 price checker
-├── api_clients
-│	├── apify_api_client.py	- Sends a request to a Apify API.
-│	├── serpapi_client.py	- Sends a request to a SerpApi API.
-│	├── unwrangle_client.py	- Sends a request to a Unwrangle API.
-├── resources
-│	├── dark_diagram.webp	- Image for the readme
-│	├── light_diagram.webp	- Image for the readme
-├── static
-│	├── stylesheet.css		- Style for the HTML.
-├── templates
-│	├── page.html 			- Main HTML page for the checker.
-│	├── dev_responses.html	- Dev Sheet to check errors and raw JSON responces.
-├── utils
-│	├── charting.py				- Contains functions for chart creation.
-│	├── check_for_update.py		- Checks the repo for the latest version. 
-│	├── database.py				- Functions for connections management and schema setup.
-│	├── providers.py			- Holds the provider selection and API-specific behavior.
-│	├── scanner.py				- Functions that form the scan workflow.
-│	├── watchlist_io.py			- Contians the functions for importing and exporting your watchlists.
-├── changelog.md 			- A list of changes to the program.
-├── CODE_OF_CONDUCT.md		- The code of conduct
-├── LICENSE					- Standard MIT license.
-├── main.py					- Entrance file for the program.
-├── README.md				- This file.
-├── requirements.txt		- A list of requirments to run the price-checker.
-├── SECURITY.md				- The Security file
-├── version.py				- Contains the Version Number.
+├── .github/workflows/ci.yml   - Tests and Docker smoke test.
+├── api_clients/               - SerpApi, Unwrangle and Apify clients.
+├── deploy/                    - systemd service and backup timer.
+├── docker/entrypoint.sh       - Creates a secret on first start in Docker.
+├── docs/deployment.md         - Docker, systemd, firewall, tunnels, backups.
+├── resources/                 - Images for this readme.
+├── static/stylesheet.css      - Style for the HTML.
+├── templates/                 - Pages: watchlist, login, account, admin, dev lab, shared banner and quota panel.
+├── tests/                     - Test suite (see tests/README.md).
+├── utils/
+│	├── auth.py                - Sessions, lockout, rate limits, invites.
+│	├── charting.py            - Chart creation.
+│	├── check_for_update.py    - Checks the repo for the latest version.
+│	├── config.py              - Mode, host, TLS and feature settings.
+│	├── database.py            - Connections, WAL mode, schema setup, backups.
+│	├── limits.py              - Per-user and server-wide API budgets.
+│	├── migrations.py          - Versioned database migrations.
+│	├── providers.py           - Provider selection and API-specific behavior.
+│	├── scanner.py             - Scan workflow.
+│	├── serving.py             - Server choice, self-signed certificates, scheduler.
+│	├── users.py               - User accounts.
+│	└── watchlist_io.py        - Import and export.
+├── .env.example               - Settings template for Docker.
+├── Caddyfile                  - Reverse proxy with automatic HTTPS.
+├── changlog.md                - A list of changes to the program.
+├── docker-compose.yml         - App plus Caddy.
+├── Dockerfile                 - Non-root image with a healthcheck.
+├── gunicorn.conf.py           - Production server settings (one worker, threads).
+├── main.py                    - Entrance file, routes and CLI commands.
+├── requirements.txt           - Requirements to run the price checker.
+├── version.py                 - The version number.
+├── wsgi.py                    - Production entrypoint.
+├── CODE_OF_CONDUCT.md, CONTRIBUTING.md, LICENSE, SECURITY.md
 ```
 
 ## GitDiagram
@@ -182,50 +197,31 @@ Only check pages where automated access is permitted by the site's terms and app
 ### Upcoming / Noted
 
 - Mapping 2 datasheets together.
-- Persistance to all store numbers. 
+- Persistence for all store numbers.
 - Combine similar items onto a single line graph, then export as an image.
-- Search bar function to quickly show the requested item. (Instead of scrolling the entire database.)
-- Integrate SerpApi's and Unwrangle's Amazon API into the program
-- SerpApi has a bunch of other API's that don't fit with the current project. Perhaps we can make an offshoot of this program. (Social Media anylitics)
-- Change the time zone from UTC to the machine's time zone
-- Local Database compare: If you have your own database of products, you can see which items you and walmart, lowes, home-depot share. Easy table export function for comparision. (If you don't map the items by something they share, you won't get any hits. E.G. UPC, Name, Product ID or SKU)
-- Dev mode tools:
-	- Fixture generator
-	- Parser validation panel
-	- API health dashboard
-	- Dry-run mode
+- Search bar to quickly find an item instead of scrolling the whole list.
+- Integrate SerpApi's and Unwrangle's Amazon API.
+- SerpApi has many other APIs that don't fit this project. Perhaps an offshoot program (social media analytics).
+- Change the time zone from UTC to the machine's time zone.
+- Local database compare: see which items you and another list share (Walmart, Lowes, Home Depot), with an easy table export. Items must share something such as a UPC, name, product ID or SKU.
+- Password resets by email or security questions, and a forced password change after an admin reset.
+- Dev mode tools: fixture generator, parser validation panel, API health dashboard, dry-run mode.
 
 ### Implemented / Fixed
 
-- Dev mode tools:
-	- Raw API response viewer
-	- Price extraction debugger
-	- Replay saved API responses
-	- API request log
-- Usage bar in the top right to tell the user how many more searches/credits they have left
-- Bulk purchasing line in graph history.
-- Saving the env file on the front end adds too many new lines. 
-- Add time interval customization for the bar graph.(User controlled)
-- Export line graph as image
-- Graph view: Shows a line graph of the product over time.
-- Watchlist export: Download current products and saved observations as JSON or CSV.
-- JSON and CSV exports include the retailer product ID when it can be extracted from a supported product URL.
-- Local Flask interface for adding and removing URLs.
-- SQLite-backed current prices, scan observations, errors, and daily scan state.
-- SerpApi product lookups with configurable timeouts.
-- Resilient parsing for retailer product and offer response shapes.
-- Per-URL failures are recorded while the rest of the scan continues.
-- Search the same item through multiple stores.
-- Different themes for your enjoyment.
-- Unwrangle API integration with more retailers.
-- Ability to toggle between auto, SerpApi, Unwrangle, and Apify.
-- JSON and CSV data export
-- Store specific search. Works with SerpApi, and a few of Unwrangle's API's
-- .env file editor from front end
-- Unwrangle API integration (Walmart, Home Depot, Lowes, Ace Hardware, Sams Club)
-- Import/export the raw SQLite database file to switch between watchlists
-- On Python 3.15 and newer, selected imports are loaded only when first used. Older Python versions ignore this setting and import them normally.
-- Apify API integration (Lowes), including bulk price display and `bulk_price`/`bulk_quantity` CSV export columns.
-- Local server shutdown is now togglable.
-- Setting preferances. Allowing the user to map an api to a single item so every time the check is called it uses that mapped api. 
-- Resetting your place after you run a function can get annoying. Add a page location persistance function.
+- Multi-user LAN and public modes: accounts, admin page, invites, lockout, rate limits, per-user data, budgets and quotas.
+- LAN TLS (self-signed or custom), production server selection, Docker, Caddy and systemd deployment, backups.
+- Versioned database migrations and WAL mode for concurrent users.
+- Security hardening: CSP, Host allowlist, CSRF on every POST, secure cookies, proxy support.
+- Per-user import and export that merges instead of replacing.
+- Dev mode tools: raw API response viewer, price extraction debugger, replay of saved responses, API request log.
+- Usage bar showing remaining searches/credits.
+- Bulk purchasing line in graph history, and `bulk_price`/`bulk_quantity` CSV columns.
+- Line graph per product with user-controlled time interval, and export as an image.
+- Watchlist export as JSON or CSV, including the retailer product ID when it can be extracted.
+- Flask interface for adding and removing URLs, with SQLite-backed prices, scan observations, errors and daily scan state.
+- SerpApi, Unwrangle (Walmart, Home Depot, Lowes, Ace Hardware, Sam's Club) and Apify (Lowes) integrations, with auto/manual provider choice and per-item pinning.
+- Resilient parsing for retailer product and offer response shapes. Per-URL failures are recorded and the scan continues.
+- Search the same item through multiple stores, and store-specific search.
+- Themes, a `.env` editor (local mode), togglable local shutdown, and page scroll persistence.
+- On Python 3.15 and newer, selected imports are loaded only when first used.

@@ -21,6 +21,7 @@ Written by: AJ Utz
 		</div>
 		{% block header_links %}{% endblock %}
 	</header>
+	{% include '_banner.html' %}
 	{% if message %}<p class="notice">{{ message }}</p>{% endif %}
 	{% if error %}<p class="notice error-notice" role="alert">{{ error }}</p>{% endif %}
 	{% block content %}{% endblock %}

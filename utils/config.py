@@ -289,6 +289,8 @@ def startup_errors(settings: Settings, admin_exists: bool) -> list[str]:
 		errors.append("Waitress cannot serve TLS. Use PRICE_CHECKER_SERVER=werkzeug or gunicorn, or turn TLS off and use a reverse proxy.")
 	if settings.server == "gunicorn" and os.name == "nt":
 		errors.append("Gunicorn does not run on Windows. Use PRICE_CHECKER_SERVER=waitress or werkzeug.")
+	if settings.mode == "public" and settings.server == "waitress":
+		errors.append("Public mode needs gunicorn: waitress discards the X-Forwarded-* headers, so the proxy's visitors would all look like one address.")
 
 	if settings.mode == "public":
 		if not settings.allowed_hosts:

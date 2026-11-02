@@ -1,0 +1,16 @@
+<section class="quota-panel" aria-label="Your usage limits">
+	<h2>Your limits</h2>
+	<div class="quota-grid">
+		{% macro meter(label, item, note) %}
+		<div class="quota-item">
+			<span class="quota-label">{{ label }}</span>
+			<meter class="quota-meter {{ 'quota-high' if item.percent >= 90 }}" min="0" max="100" value="{{ item.percent }}" aria-label="{{ label }}" aria-valuetext="{{ item.used }} of {{ item.limit }}"></meter>
+			<span class="quota-count">{{ item.used }} of {{ item.limit }}</span>
+			{% if note %}<span class="help">{{ note }}</span>{% endif %}
+		</div>
+		{% endmacro %}
+		{{ meter('Products tracked', quota.products, '') }}
+		{% if quota.api %}{{ meter('API calls today', quota.api, 'Resets at midnight UTC.') }}{% endif %}
+		{% if quota.rechecks %}{{ meter('Re-checks this hour', quota.rechecks, '') }}{% endif %}
+	</div>
+</section>

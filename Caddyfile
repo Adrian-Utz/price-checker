@@ -1,0 +1,10 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 64MB
+	}
+
+	# Caddy sets X-Forwarded-For/-Proto/-Host and drops any copies sent by the client.
+	reverse_proxy app:5000
+}

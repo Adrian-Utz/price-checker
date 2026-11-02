@@ -59,6 +59,25 @@ def init_db() -> None:
 		migrate(connection, backup_dir=DATABASE_PATH.parent / "backups")
 
 
+def backup_database(keep: int = 14) -> Path:
+	"""Write a consistent copy of the live database (safe while the app is running, WAL included) into backups/.
+	Only the newest `keep` scheduled copies are kept; pre-migration copies are left alone."""
+	from datetime import datetime, timezone
+
+	backup_dir = DATABASE_PATH.parent / "backups"
+	backup_dir.mkdir(parents=True, exist_ok=True)
+	target_path = backup_dir / f"price_checker-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.sqlite3"
+	with connect() as source:
+		target = sqlite3.connect(target_path)
+		try:
+			source.backup(target)
+		finally:
+			target.close()
+	for old in sorted(backup_dir.glob("price_checker-*.sqlite3"))[:-keep]:
+		old.unlink(missing_ok=True)
+	return target_path
+
+
 def admin_exists() -> bool:
 	"""Report whether an enabled admin account that can log in exists (the placeholder local owner can't)."""
 	with connect() as connection:

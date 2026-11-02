@@ -446,6 +446,27 @@ input[type=password], input[type=number] {
 
 .error-notice { border-left-color: #b3261e; }
 
+.warning-notice { border-left-color: #b26a00; font-weight: 500; }
+
+.mode-badge {
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    font: 600 .75rem system-ui, sans-serif;
+    letter-spacing: .04em;
+    padding: 3px 10px;
+    text-transform: uppercase;
+}
+
+.quota-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+
+.quota-item { display: flex; flex-direction: column; font: .9rem system-ui, sans-serif; gap: 4px; }
+
+.quota-label { font-weight: 600; }
+
+.quota-meter { height: 10px; width: 100%; }
+
+.quota-high { accent-color: #b3261e; }
+
 .user-bar {
     align-items: center;
     display: flex;

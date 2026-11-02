@@ -91,6 +91,12 @@ def retry_after_seconds(connection: sqlite3.Connection, ip: str, kind: str, limi
 	return max(1, math.ceil(attempts[len(attempts) - limit] + window - now))
 
 
+def attempts_in_window(connection: sqlite3.Connection, ip: str, kind: str, window: int) -> int:
+	return connection.execute(
+		"SELECT COUNT(*) FROM login_attempts WHERE ip = ? AND kind = ? AND attempted_at > ?", (ip, kind, time.time() - window)
+	).fetchone()[0]
+
+
 def record_attempt(connection: sqlite3.Connection, ip: str, kind: str) -> None:
 	now = time.time()
 	connection.execute("DELETE FROM login_attempts WHERE attempted_at < ?", (now - 24 * 3600,))

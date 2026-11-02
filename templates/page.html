@@ -21,6 +21,7 @@ Written by: AJ Utz
 			<div class="title-line">
 				<h1>Price Checker</h1>
 				<span class="version">v{{ version_number }}</span>
+				{% if mode_label %}<span class="mode-badge">{{ mode_label }}</span>{% endif %}
 				{% if update_available %}
 				<a class="update-badge" href="{{ releases_url }}" target="_blank" rel="noopener noreferrer">Update available: {{ latest_version }}</a>
 				{% endif %}
@@ -102,6 +103,8 @@ Written by: AJ Utz
 			</div>
 			</div>
 	</header>
+	{% include '_banner.html' %}
+	{% if accounts_enabled %}{% include '_quota.html' %}{% endif %}
 		{% if edit_env %}
 		<dialog class="history-modal" id="env-editor">
 			<!--Editor popup for .env file, Allows the user to change their API key on the fly.-->
@@ -158,7 +161,7 @@ Written by: AJ Utz
 			</span>
 		</form>
 		<p class="help">Each URL is checked through the selected API provider ({{ api_provider }}), then saved locally so you can review the result later.</p>
-		{% if api_budget %}<p class="help">API budget today: {{ api_budget.used }} of {{ api_budget.limit }} calls used (resets at midnight UTC).</p>{% endif %}
+		{% if quota.api %}<p class="help">API budget today: {{ quota.api.used }} of {{ quota.api.limit }} calls used (resets at midnight UTC).</p>{% endif %}
 		<div class="watchlist-actions">
 			<button class="export-button import-button" type="button" data-open-dialog="import-db">Import watchlist</button>
 			<div class="export-actions">

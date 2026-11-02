@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compose file is valid
+        run: DOMAIN=prices.example.com docker compose config --quiet
+
+      - name: Build the image
+        run: docker build -t price-checker:ci .
+
+      - name: Create the admin before first start
+        run: |
+          docker volume create ci-data
+          docker run --rm -v ci-data:/data -e PRICE_CHECKER_ADMIN_PASSWORD="ci smoke test passphrase" \
+            price-checker:ci python main.py create-admin ci-admin
+
+      - name: Start in public mode and wait for the healthcheck
+        run: |
+          docker run -d --name pc -v ci-data:/data \
+            -e PRICE_CHECKER_ALLOWED_HOSTS=prices.example.com -e PRICE_CHECKER_TRUSTED_PROXIES=1 \
+            price-checker:ci
+          for i in $(seq 1 40); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' pc)
+            [ "$status" = healthy ] && exit 0
+            sleep 3
+          done
+          echo "Container never became healthy (last status: $status)"
+          docker logs pc
+          exit 1
+
+      - name: Runs as a non-root user and requires login
+        run: |
+          [ "$(docker exec pc id -u)" != 0 ]
+          docker exec pc python -c "
+          import urllib.request, urllib.error
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs): return None
+          opener = urllib.request.build_opener(NoRedirect)
+          request = urllib.request.Request('http://127.0.0.1:5000/', headers={'Host': 'prices.example.com'})
+          try:
+              opener.open(request)
+              raise SystemExit('anonymous request was served')
+          except urllib.error.HTTPError as error:
+              assert error.code == 302 and '/login' in error.headers['Location'], error.code
+          "
+
+      - name: Container logs
+        if: failure()
+        run: docker logs pc

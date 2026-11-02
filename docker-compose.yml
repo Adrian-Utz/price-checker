@@ -1,0 +1,41 @@
+# Price Checker (public mode) behind Caddy, which gets and renews the HTTPS certificate automatically.
+# Setup: copy .env.example to .env, set DOMAIN and an API key, then see docs/deployment.md.
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PRICE_CHECKER_ALLOWED_HOSTS: ${DOMAIN:?Set DOMAIN in .env}
+      PRICE_CHECKER_TRUSTED_PROXIES: "1" # Caddy is the one proxy in front of the app
+    volumes:
+      - price_data:/data
+    expose:
+      - "5000" # Reachable by Caddy only. Never publish this port.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  price_data:
+  caddy_data:
+  caddy_config:

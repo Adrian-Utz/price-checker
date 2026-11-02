@@ -35,7 +35,7 @@
 - Added some more variables in `main.py` to help with [Live Sharing](https://marketplace.visualstudio.com/items?itemName=MS-vsliveshare.vsliveshare). Added the ability to map Api Providers to products. Allowing the user to map out their entire watch list. Click an item's retailer button and use the new `API for this item` drop down. the row shows an `API <name>` label when an item is pinned. Unpinned items use the global provider at the top of the page. Added a scroll persistence script in `page.html` it will save your position every time you reload the page.
 
 # [v0.1.0](https://github.com/Adrian-Utz/price-checker/releases/tag/0.1.0)
-- Perhaps the greatest undertaking of this program. Adding the ability to run the program on a LAN server or on the internet. For this part I seperated it into 10 development phases. Phases 1,2,3 and 5 give a working multi-user LAN mode over HTTP. Phase 4 and 6 are about user input, serving and LAN TLS. Phase 6 also sets up the production server, and phase 7 is all about public mode. Phases 8, 9 and 10 cover UI, tests, and documentation.  
+- Perhaps the greatest undertaking of this program. Adding the ability to run the program on a LAN server or on the internet. For this part I seperated it into 10 development phases. Phases 1, 2, 3 and 5 give a working multi-user LAN mode over HTTP. Phase 4 covers per-user import and export. Phase 6 adds serving and LAN TLS, and sets up the production server. Phase 7 is all about public mode and deployment. Phases 8, 9 and 10 cover UI, tests, and documentation.
 
 ### Phase 1:
 
@@ -172,3 +172,41 @@ Also
 Things to know
 * WAL doesn't work well on network filesystems, so keep `DATA_DIR` on a local disk or a Docker volume.
 * `/healthz` sets a session cookie which is harmless.
+
+### Phase 7:
+
+**What was Added**
+* Container files: `Dockerfile`, `docker-compose.yml`, `Caddyfile`, `.env.example`.
+* Docker support files: `docker/entrypoint.sh`, `.dockerignore` and `.gitattributes`. The app is never published directly only Caddy is, and compose required `DOMAIN`.
+* Non-Docker Linux: `deploy/price-checker.service` plus a daily service and timer.
+* Docs: `docs/deployment.md` covers the Docker quickstart, systemd, LAN with ufw, router port forwarding, Cloudflare Tunnel, Tailscale, and backup and restore.
+* Backup Command: `python main.py backup [keep]` takes a consistent copy of the SQLite database and keeps the last 14 by default. Don't copy the live `.sqlite3` file because the database runs in WAL mode.
+* Provider settings: In non-local modes the `.env` editor now reads and writes `/data/.env`. It never overwrites the API keys you set through compose with blank values.
+
+**On a Linux host**
+* Create the admin before up: run `docker compose run --rm app python main.py create-admin <name>` first. Otherwise the contianer refuses to start without an admin and keeps restarting.
+* Build and check health: run `docker compose build`, then `docker compose up -d`, then check that `docker compose ps` shows the app as healthy.
+* Unverified docs: I have yet to verify that the Cloudflare Tunnel and Tailscale sections work the same with Linux. After the first login through the tunnel, check that the rate limiter sees real client IPs.
+* Public mode refuses to start on waitress, because waitress throws away the proxy's `X-Forwarded-*` headers. Every visitor would look like one address. Gunicorn is the default there.
+
+### Phase 8:
+
+**What was Added**
+* Warning banner on every page outside local mode. LAN over plain HTTP warns that the connection isn't encrypted, a self-signed certificate gets an explanation, and public mode warns if a page wasn't delivered over HTTPS.
+* A "LAN mode" or "Public mode" badge next to the version.
+* A quota panel with the signed-in user's own products, API calls today and re-checks this hour. Bars turn red at 90%, and unlimited rows are hidden.
+* The login page, user menu and admin page already existed from Phase 3. Global API usage is still admin-only.
+
+### Phase 9:
+
+**What was Added**
+* `tests/test_matrix.py` loops over every route in LAN and public mode, so a new route that skips a check fails a test. It covers login required, cross-user 404s on every id route, admin-only routes, routes that must be disabled outside local mode, TLS settings and re-running migrations.
+* `tests/test_ui.py` covers the banner, badge, quota panel and user menu.
+* `tests/README.md` explains how to run each test file.
+* `.github/workflows/ci.yml` runs the tests, then builds the Docker image, starts it in public mode, waits for it to be healthy and checks that it runs as non-root and requires login. It has not run on GitHub yet.
+
+### Phase 10:
+
+**What was Added**
+* Version bumped to 0.1.0.
+* The README was rewritten around the three modes, with sections for LAN, Docker, accounts, import and export, and the file layout.* Administrators in LAN and public modes now get the developer tools that developer mode gives in local mode: the API response lab and replay, Re-check on every product, no daily scan limit, and raw response recording (newest 1000 kept). Their calls skip the per-user API budget, server-wide cap and re-check limit but are still counted. Non-admins get a 404 for the lab.
