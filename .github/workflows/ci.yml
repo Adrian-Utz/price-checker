@@ -22,7 +22,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Compose file is valid
-        run: DOMAIN=prices.example.com docker compose config --quiet
+        run: |
+          cp .env.example .env
+          DOMAIN=prices.example.com docker compose config --quiet
+          rm .env
 
       - name: Build the image
         run: docker build -t price-checker:ci .
