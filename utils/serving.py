@@ -19,7 +19,7 @@ works out the LAN addresses to print, and runs the optional daily scheduled scan
 	lan    -> waitress, or werkzeug when this app serves TLS itself (waitress has no TLS)
 	public -> gunicorn, one worker process with several threads, behind a reverse proxy
 
-Last Update: 10/28/2026
+Last Update: 10/30/2026
 Written on: 10/28/2026
 Written by: AJ Utz
 """

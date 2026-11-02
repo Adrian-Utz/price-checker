@@ -10,7 +10,7 @@ Versioned schema migrations, tracked with SQLite's PRAGMA user_version.
 To change the schema, append a new function to MIGRATIONS. Never edit or reorder a released migration.
 Each migration runs in its own transaction and bumps user_version only if it succeeds.
 
-Last Update: 10/20/2026
+Last Update: 10/30/2026
 Written on: 10/20/2026
 Written by: AJ Utz
 """

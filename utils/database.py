@@ -9,7 +9,7 @@ from utils.migrations import UNUSABLE_PASSWORD_HASH, migrate
 """
 Contains the functions for connections management and schema setup.
 
-Last Update: 10/19/2026
+Last Update: 11/2/2026
 Written on: 10/12/2026
 Written by: AJ Utz
 """

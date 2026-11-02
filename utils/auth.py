@@ -16,7 +16,7 @@ Authentication helpers: password checks with account lockout, per-IP rate limiti
 password changes, role/disable management, and invite links.
 Login, logout and session handling live in main.py.
 
-Last Update: 10/23/2026
+Last Update: 11/2/2026
 Written on: 10/20/2026
 Written by: AJ Utz
 """

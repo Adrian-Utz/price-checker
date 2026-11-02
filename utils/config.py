@@ -16,7 +16,7 @@ Modes:
 	lan    - reachable on the local network, accounts required, optional TLS.
 	public - internet hosting behind a reverse proxy, accounts required.
 
-Last Update: 10/20/2026
+Last Update: 11/2/2026
 Written on: 10/20/2026
 Written by: AJ Utz
 """
