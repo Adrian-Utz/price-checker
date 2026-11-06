@@ -219,12 +219,66 @@ def _api_spend(connection: sqlite3.Connection) -> None:
 	""")
 
 
+def _shared_lists(connection: sqlite3.Connection) -> None:
+	"""Products and saved stores move from a single owner to a shared list that several users can be assigned to.
+	Each existing owner keeps their data in a list of their own, so nothing changes until an administrator shares it."""
+	from utils.lists import ensure_personal_list
+
+	connection.execute("""
+		CREATE TABLE IF NOT EXISTS lists (
+			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		)
+	""")
+	connection.execute("""
+		CREATE TABLE IF NOT EXISTS list_members (
+			list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			PRIMARY KEY (list_id, user_id)
+		)
+	""")
+	product_columns = {row[1] for row in connection.execute("PRAGMA table_info(products)")}
+	if "list_id" not in product_columns:
+		connection.execute("ALTER TABLE products ADD COLUMN list_id INTEGER REFERENCES lists(id) ON DELETE CASCADE")
+	local_id = connection.execute("SELECT id FROM users WHERE username = ?", (LOCAL_USERNAME,)).fetchone()[0]
+	owners = [row[0] for row in connection.execute(
+		"SELECT user_id FROM products WHERE user_id IS NOT NULL UNION SELECT user_id FROM stores UNION SELECT ?", (local_id,)
+	)]
+	list_for = {owner: ensure_personal_list(connection, owner, "My watchlist" if owner == local_id else None) for owner in owners}
+	for owner, list_id in list_for.items():
+		connection.execute("UPDATE products SET list_id = ? WHERE user_id = ? AND list_id IS NULL", (list_id, owner))
+
+	store_columns = {row[1] for row in connection.execute("PRAGMA table_info(stores)")}
+	if "list_id" not in store_columns:
+		# Store numbers are now unique per list, which SQLite can only change by rebuilding the table.
+		connection.execute("""
+			CREATE TABLE stores_new (
+				id INTEGER PRIMARY KEY,
+				list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+				retailer TEXT NOT NULL, store_id TEXT NOT NULL,
+				name TEXT NOT NULL, location TEXT NOT NULL, zip_state TEXT, zipcode TEXT,
+				UNIQUE(list_id, retailer, store_id)
+			)
+		""")
+		for owner, list_id in list_for.items():
+			connection.execute("""
+				INSERT INTO stores_new (id, list_id, retailer, store_id, name, location, zip_state, zipcode)
+				SELECT id, ?, retailer, store_id, name, location, zip_state, zipcode FROM stores WHERE user_id = ?
+			""", (list_id, owner))
+		connection.execute("DROP TABLE stores")
+		connection.execute("ALTER TABLE stores_new RENAME TO stores")
+	connection.execute("CREATE INDEX IF NOT EXISTS idx_products_list ON products(list_id)")
+	connection.execute("CREATE INDEX IF NOT EXISTS idx_list_members_user ON list_members(user_id)")
+
+
 MIGRATIONS: list[tuple[str, Callable[[sqlite3.Connection], None]]] = [
 	("baseline schema", _baseline),
 	("users table", _users),
 	("per-user ownership", _ownership),
 	("authentication", _auth),
 	("API spend tracking", _api_spend),
+	("shared lists", _shared_lists),
 ]
 LATEST_VERSION = len(MIGRATIONS)
 

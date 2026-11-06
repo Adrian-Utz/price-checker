@@ -12,40 +12,48 @@ from api_clients.unwrangle_client import UnwrangleClient
 
 
 def setup_module():
+    """Configure test environment by enabling Flask testing mode."""
     from main import app
 
     app.testing = True
 
 
 def test_normalize_url_removes_fragment():
+    """Verify that URL normalization strips fragment identifiers and whitespace."""
     assert normalize_url(" https://example.com/item#reviews ") == "https://example.com/item"
 
 
 def test_normalize_url_rejects_non_http_urls():
+    """Ensure that non-HTTP URLs raise a ValueError."""
     with pytest.raises(ValueError):
         normalize_url("example.com/item")
 
 
 def test_parse_price_uses_lowest_visible_dollar_amount():
+    """Verify that price parsing extracts the lowest visible dollar value from text."""
     assert parse_price("Was $39.99, now $24.50") == 24.50
 
 
 def test_parse_price_reads_screen_reader_price_text():
+    """Test that price parsing works with screen reader formatted text containing whitespace."""
     markup_text = "\\n        $129.99\\n        "
     assert parse_price(markup_text) == 129.99
 
 
 def test_http_error_is_reported_before_extraction():
+    """Ensure that HTTP error status codes raise RuntimeError before attempting data extraction."""
     with pytest.raises(RuntimeError, match="HTTP 403"):
         ensure_success_status(403)
 
 
 def test_product_query_uses_product_slug_without_numeric_id():
+    """Verify that product query extraction removes numeric IDs and returns only the product slug."""
     url = "https://www.lowes.com/pd/Dowan-Office-Chair-Black/7975119"
     assert product_query(url) == "Dowan Office Chair Black"
 
 
 def test_cache_is_fresh_respects_cache_window():
+    """Check that cache freshness is evaluated within a 24-hour window."""
     fresh = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     stale = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
     assert cache_is_fresh(fresh)
@@ -54,23 +62,27 @@ def test_cache_is_fresh_respects_cache_window():
 
 
 def test_local_calendar_date_converts_timestamp_to_computer_timezone():
+    """Verify that timestamp conversion to local date respects the computer's timezone."""
     timestamp = "2026-08-21T00:30:00+00:00"
     assert local_calendar_date(timestamp) == datetime.fromisoformat(timestamp).astimezone().date()
 
 
 def test_walmart_reference_extracts_product_id():
+    """Ensure that Walmart product references correctly extract retailer and product ID."""
     reference = product_reference("https://www.walmart.com/ip/Example-Product/123456789")
     assert reference.retailer == "walmart"
     assert reference.product_id == "123456789"
 
 
 def test_home_depot_reference_extracts_numeric_product_id():
+    """Verify that Home Depot product references extract numeric product IDs correctly."""
     reference = product_reference("https://www.homedepot.com/p/Example-Drill/987654321")
     assert reference.retailer == "home_depot"
     assert reference.product_id == "987654321"
 
 
 def test_walmart_provider_reads_product_result(monkeypatch):
+    """Test that the SerpApi client correctly processes Walmart product responses and adds currency."""
     client = SerpApiClient("test-key")
     calls = []
 
@@ -85,6 +97,7 @@ def test_walmart_provider_reads_product_result(monkeypatch):
 
 
 def test_walmart_provider_reads_product_result_without_location(monkeypatch):
+    """Verify that Walmart product queries work correctly without a store_id parameter."""
     client = SerpApiClient("test-key")
     monkeypatch.setattr(client, "request", lambda engine, **params: {
         "product_result": {"title": "Example Product", "price": 12.99}
@@ -94,6 +107,7 @@ def test_walmart_provider_reads_product_result_without_location(monkeypatch):
 
 
 def test_home_depot_provider_resolves_search_result(monkeypatch):
+    """Test that Home Depot provider makes two API calls: search and then product lookup."""
     client = SerpApiClient("test-key")
     calls = []
 
@@ -114,6 +128,7 @@ def test_home_depot_provider_resolves_search_result(monkeypatch):
 
 
 def test_store_name_is_read_from_provider_response(monkeypatch):
+    """Verify that store name from the API response is included in the product result."""
     client = SerpApiClient("test-key")
     monkeypatch.setattr(client, "request", lambda engine, **params: {
         "search_information": {"store_name": "Charlottesville"},
@@ -124,6 +139,7 @@ def test_store_name_is_read_from_provider_response(monkeypatch):
 
 
 def test_store_location_is_read_from_provider_response(monkeypatch):
+    """Test that store location information from search_information is formatted and returned correctly."""
     client = SerpApiClient("test-key")
     monkeypatch.setattr(client, "request", lambda engine, **params: {
         "search_information": {
@@ -137,6 +153,7 @@ def test_store_location_is_read_from_provider_response(monkeypatch):
 
 
 def test_home_depot_provider_reads_nested_current_offer_price(monkeypatch):
+    """Ensure that Home Depot provider extracts price from nested offers array structure."""
     client = SerpApiClient("test-key")
     monkeypatch.setattr(client, "request", lambda engine, **params: {
         "product_result": {
@@ -150,10 +167,12 @@ def test_home_depot_provider_reads_nested_current_offer_price(monkeypatch):
 
 
 def test_product_price_ignores_previous_price_when_current_price_missing():
+    """Verify that product_price returns None when current price is missing, ignoring historical prices."""
     assert product_price({"price_was": 19.99, "original_price": "$24.99"}) is None
 
 
 def test_bulk_price_skips_invalid_tier_above_regular_price():
+    """Test that bulk price extraction skips tiers with prices higher than the regular price."""
     offer = {
         "bulk_price": 50,
         "bulk_quantity": 77,
@@ -163,11 +182,13 @@ def test_bulk_price_skips_invalid_tier_above_regular_price():
 
 
 def test_bulk_price_reads_provider_specific_quantity_parameters():
+    """Verify that bulk price extraction works with provider-specific quantity parameter names."""
     assert product_bulk_price({"bulk_price": 19.15, "bulk_price_quantity": 50}) == (19.15, 50)
     assert unwrangle_bulk_price({"bulk_price": "$19.15", "bulk_price_threshold": 50}) == (19.15, 50)
 
 
 def test_lowes_provider_reads_numeric_price(monkeypatch):
+    """Test that Unwrangle client correctly extracts numeric price from Lowe's API response."""
     client = UnwrangleClient("test-key")
     monkeypatch.setattr(client, "request", lambda platform, **params: {
         "detail": {
@@ -181,6 +202,7 @@ def test_lowes_provider_reads_numeric_price(monkeypatch):
 
 
 def test_lowes_provider_reads_plain_numeric_price_string(monkeypatch):
+    """Verify that Unwrangle client converts plain numeric price strings to float."""
     client = UnwrangleClient("test-key")
     monkeypatch.setattr(client, "request", lambda platform, **params: {
         "detail": {"name": "Example Lowes Product", "price": "2399", "currency": "USD"}
@@ -190,6 +212,7 @@ def test_lowes_provider_reads_plain_numeric_price_string(monkeypatch):
 
 
 def test_lowes_provider_reads_nested_or_list_price(monkeypatch):
+    """Test that price extraction handles both nested object and array price formats."""
     client = UnwrangleClient("test-key")
     responses = iter([
         {"detail": {"name": "Example Lowes Product", "price": {"value": "2399"}}},
@@ -202,6 +225,7 @@ def test_lowes_provider_reads_nested_or_list_price(monkeypatch):
 
 
 def test_lowes_provider_falls_back_to_list_price(monkeypatch):
+    """Verify that price extraction falls back to list_price when the main price is None."""
     client = UnwrangleClient("test-key")
     monkeypatch.setattr(client, "request", lambda platform, **params: {
         "detail": {"name": "Example Lowes Product", "price": None, "list_price": 2399, "currency": "USD"}
@@ -211,6 +235,7 @@ def test_lowes_provider_falls_back_to_list_price(monkeypatch):
 
 
 def test_unwrangle_request_records_response_history_for_dev_mode(monkeypatch):
+    """Test that UnwrangleClient records API responses in response_history for debugging."""
     import api_clients.unwrangle_client as unwrangle_client
 
     client = UnwrangleClient("test-key")
@@ -234,12 +259,14 @@ def test_unwrangle_request_records_response_history_for_dev_mode(monkeypatch):
 
 
 def test_unwrangle_price_parser_reads_trailing_currency():
+    """Verify that unwrangle price parser correctly handles currency codes at the end of price strings."""
     from api_clients.unwrangle_client import parse_price
 
     assert parse_price("2399 USD") == 2399.0
 
 
 def test_home_depot_provider_uses_priced_products_when_product_result_has_no_price(monkeypatch):
+    """Ensure that Home Depot provider falls back to priced products list when main result has no price."""
     client = SerpApiClient("test-key")
     monkeypatch.setattr(client, "request", lambda engine, **params: {
         "product_result": {"title": "Metadata only"},
@@ -251,6 +278,7 @@ def test_home_depot_provider_uses_priced_products_when_product_result_has_no_pri
 
 
 def test_home_depot_provider_reads_product_results_envelope(monkeypatch):
+    """Test that Home Depot provider extracts price from product_results array structure."""
     client = SerpApiClient("test-key")
     monkeypatch.setattr(client, "request", lambda engine, **params: {
         "product_results": [{"title": "OOK Mirror Clip", "offers": [{"price": {"value": 8.98}}]}]
@@ -260,18 +288,21 @@ def test_home_depot_provider_reads_product_results_envelope(monkeypatch):
 
 
 def test_serpapi_client_requires_key(monkeypatch):
+    """Verify that SerpApiClient raises an error when API key is missing or empty."""
     monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
     with pytest.raises(SerpApiError, match="SERPAPI_API_KEY"):
         SerpApiClient("")
 
 
 def test_serpapi_timeout_is_configurable(monkeypatch):
+    """Test that SerpApiClient timeout can be configured via environment variable."""
     monkeypatch.setenv("SERPAPI_TIMEOUT_SECONDS", "120")
     client = SerpApiClient("test-key")
     assert client.timeout_seconds == 120
 
 
 def test_serpapi_account_usage_reads_remaining_searches(monkeypatch):
+    """Verify that SerpApi account usage endpoint returns remaining searches and monthly limits."""
     import api_clients.serpapi_client as serpapi_client
 
     client = SerpApiClient("test+key")
@@ -303,6 +334,7 @@ def test_serpapi_account_usage_reads_remaining_searches(monkeypatch):
 
 
 def test_fetch_product_caches_unwrangle_remaining_credits(monkeypatch):
+    """Test that fetch_product caches remaining Unwrangle credits from the API response."""
     import main
 
     monkeypatch.setenv("PRICE_CHECKER_API_PROVIDER", "unwrangle")
@@ -321,6 +353,7 @@ def test_fetch_product_caches_unwrangle_remaining_credits(monkeypatch):
 
 
 def test_home_page_displays_provider_usage(monkeypatch):
+    """Verify that home page displays API usage statistics for SerpApi and Unwrangle."""
     import main
 
     monkeypatch.setattr(main, "serpapi_ready", lambda: True)
@@ -336,6 +369,7 @@ def test_home_page_displays_provider_usage(monkeypatch):
 
 
 def test_home_page_explains_missing_api_setup(monkeypatch):
+    """Test that home page displays helpful message when required API keys are not configured."""
     from main import app
 
     monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
@@ -346,6 +380,7 @@ def test_home_page_explains_missing_api_setup(monkeypatch):
 
 
 def test_settings_form_persists_store_ids(monkeypatch, tmp_path):
+    """Verify that .env settings form correctly persists and reloads environment variables."""
     from main import app, ENV_FILE, read_env_file_text
 
     env_file = tmp_path / ".env"
@@ -361,6 +396,7 @@ def test_settings_form_persists_store_ids(monkeypatch, tmp_path):
 
 
 def test_saving_env_file_keeps_only_one_trailing_newline(monkeypatch, tmp_path):
+    """Test that saving .env file normalizes line endings and maintains single trailing newline."""
     import main
 
     env_file = tmp_path / ".env"
@@ -375,13 +411,14 @@ def test_saving_env_file_keeps_only_one_trailing_newline(monkeypatch, tmp_path):
 
 
 def test_watchlist_store_selection_is_saved_per_product(monkeypatch, tmp_path):
+    """Verify that users can select and save different stores for individual products in their watchlist."""
     from main import app, connect, init_db
 
     monkeypatch.setattr("main.DATABASE_PATH", tmp_path / "store-selection.sqlite3")
     init_db()
     with connect() as connection:
         product_id = connection.execute(
-            "INSERT INTO products (user_id, url, source) VALUES ((SELECT id FROM users WHERE username = 'local'), ?, ?)",
+            "INSERT INTO products (list_id, user_id, url, source) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, ?)",
             ("https://www.walmart.com/ip/example/123456", "Walmart"),
         ).lastrowid
 
@@ -405,6 +442,7 @@ def test_watchlist_store_selection_is_saved_per_product(monkeypatch, tmp_path):
 
 
 def test_store_can_be_saved_with_only_store_number(monkeypatch, tmp_path):
+    """Test that stores can be created with only a store_id, defaulting to generic name and location."""
     from main import app, connect, init_db
 
     monkeypatch.setattr("main.DATABASE_PATH", tmp_path / "number-only-store.sqlite3")
@@ -417,6 +455,7 @@ def test_store_can_be_saved_with_only_store_number(monkeypatch, tmp_path):
 
 
 def test_duplicate_url_requires_explicit_override(monkeypatch, tmp_path):
+    """Verify that adding a duplicate URL is rejected unless explicitly allowed with allow_duplicate flag."""
     from main import app, connect, init_db
 
     monkeypatch.setattr("main.DATABASE_PATH", tmp_path / "duplicate.sqlite3")
@@ -433,6 +472,7 @@ def test_duplicate_url_requires_explicit_override(monkeypatch, tmp_path):
 
 
 def test_developer_mode_scan_refetches_products_with_a_fresh_cached_price(monkeypatch, tmp_path):
+    """Test that developer mode scans refetch products even when their cache is still fresh."""
     from main import connect, init_db, run_scan
 
     monkeypatch.setattr("main.DATABASE_PATH", tmp_path / "dev-mode-scan.sqlite3")
@@ -443,8 +483,8 @@ def test_developer_mode_scan_refetches_products_with_a_fresh_cached_price(monkey
     with connect() as connection:
         local_id = connection.execute("SELECT id FROM users WHERE username = 'local'").fetchone()[0]
         connection.execute(
-            "INSERT INTO products (user_id, url, source, price, checked_at) VALUES (?, ?, ?, ?, ?)",
-            (local_id, "https://www.walmart.com/ip/example/123456", "Walmart", 19.99, fresh_checked_at),
+            "INSERT INTO products (list_id, user_id, url, source, price, checked_at) VALUES ((SELECT list_id FROM list_members WHERE user_id = ?), ?, ?, ?, ?, ?)",
+            (local_id, local_id, "https://www.walmart.com/ip/example/123456", "Walmart", 19.99, fresh_checked_at),
         )
 
     calls = []
@@ -455,6 +495,7 @@ def test_developer_mode_scan_refetches_products_with_a_fresh_cached_price(monkey
 
 
 def test_dev_response_viewer_and_replay_are_offline(monkeypatch, tmp_path):
+    """Test that developer response viewer and replay endpoints work without external API calls."""
     from main import app, init_dev_db, record_dev_api_responses
 
     dev_database = tmp_path / "response-viewer.sqlite3"
@@ -487,6 +528,7 @@ def test_dev_response_viewer_and_replay_are_offline(monkeypatch, tmp_path):
 
 
 def test_dev_response_viewer_is_hidden_when_developer_mode_is_disabled(monkeypatch):
+    """Verify that developer response viewer endpoints return 404 when developer mode is disabled."""
     from main import app
 
     monkeypatch.setattr("main.DEVELOPER_MODE", False)
@@ -495,6 +537,7 @@ def test_dev_response_viewer_is_hidden_when_developer_mode_is_disabled(monkeypat
 
 
 def test_stylesheet_is_served_from_flask_static_route():
+    """Test that CSS stylesheet is correctly served from Flask static directory."""
     from main import app
 
     response = app.test_client().get("/static/stylesheet.css")
@@ -503,6 +546,7 @@ def test_stylesheet_is_served_from_flask_static_route():
 
 
 def test_home_page_displays_version_number():
+    """Verify that home page displays the current application version number."""
     from main import VERSION_NUMBER, app
 
     response = app.test_client().get("/")
@@ -511,12 +555,14 @@ def test_home_page_displays_version_number():
 
 
 def test_dotenv_dependency_is_available():
+    """Test that dotenv library is properly installed and importable."""
     from dotenv import load_dotenv
 
     assert callable(load_dotenv)
 
 
 def test_open_app_browser_can_be_disabled(monkeypatch):
+    """Verify that browser opening can be disabled via PRICE_CHECKER_OPEN_BROWSER environment variable."""
     from main import open_app_browser
 
     opened = []
@@ -527,6 +573,7 @@ def test_open_app_browser_can_be_disabled(monkeypatch):
 
 
 def test_app_url_uses_http_for_localhost(monkeypatch):
+    """Test that app_url function defaults to http scheme for localhost addresses."""
     from main import app_url
 
     monkeypatch.delenv("PRICE_CHECKER_URL_SCHEME", raising=False)
@@ -534,6 +581,7 @@ def test_app_url_uses_http_for_localhost(monkeypatch):
 
 
 def test_app_url_respects_configured_scheme(monkeypatch):
+    """Verify that app_url respects the PRICE_CHECKER_URL_SCHEME environment variable."""
     from main import app_url
 
     monkeypatch.setenv("PRICE_CHECKER_URL_SCHEME", "https")
@@ -541,6 +589,7 @@ def test_app_url_respects_configured_scheme(monkeypatch):
 
 
 def test_price_chart_contains_price_and_date_tooltips():
+    """Test that price chart includes tooltips showing price and date information."""
     from main import app
 
     with app.app_context():
@@ -554,6 +603,7 @@ def test_price_chart_contains_price_and_date_tooltips():
 
 
 def test_price_chart_main_line_has_fallback_color_for_png_export():
+    """Verify that price chart main line includes CSS fallback color for PNG export compatibility."""
     chart = price_chart([
         {"price": 12.5, "observed_at": "2026-08-20T12:30:00+00:00"},
         {"price": 10.0, "observed_at": "2026-08-21T12:30:00+00:00"},
@@ -564,6 +614,7 @@ def test_price_chart_main_line_has_fallback_color_for_png_export():
 
 
 def test_price_chart_shows_bulk_price_as_a_second_series():
+    """Test that price chart includes bulk price as a separate line series when available."""
     from main import app
 
     with app.app_context():
@@ -579,13 +630,14 @@ def test_price_chart_shows_bulk_price_as_a_second_series():
 
 
 def test_refresh_product_records_bulk_price_history(monkeypatch, tmp_path):
+    """Test that refresh_product stores both regular and bulk prices in observation history."""
     from main import connect, init_db, refresh_product
 
     monkeypatch.setattr("main.DATABASE_PATH", tmp_path / "bulk-history.sqlite3")
     init_db()
     with connect() as connection:
         product_id = connection.execute(
-            "INSERT INTO products (user_id, url, source) VALUES ((SELECT id FROM users WHERE username = 'local'), ?, ?)",
+            "INSERT INTO products (list_id, user_id, url, source) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, ?)",
             ("https://www.walmart.com/ip/example/123456", "Walmart"),
         ).lastrowid
         product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
@@ -603,6 +655,7 @@ def test_refresh_product_records_bulk_price_history(monkeypatch, tmp_path):
 
 
 def test_price_chart_places_fifty_cent_price_ticks_on_left_and_dates_below():
+    """Test that chart axis formatting places price ticks at 50-cent intervals on left and dates below."""
     from main import app
 
     with app.app_context():
@@ -619,6 +672,7 @@ def test_price_chart_places_fifty_cent_price_ticks_on_left_and_dates_below():
 
 
 def test_price_chart_uses_larger_familiar_ticks_for_large_prices():
+    """Test that chart scaling adjusts tick intervals for larger price ranges (e.g., $25 ticks for $800+ items)."""
     from main import app
 
     with app.app_context():
@@ -634,6 +688,7 @@ def test_price_chart_uses_larger_familiar_ticks_for_large_prices():
 
 
 def test_chart_window_limits_dense_date_range_to_notable_changes(monkeypatch, tmp_path):
+    """Test that chart windowing shows only prices that changed, hiding consecutive identical values."""
     from main import app, connect, init_db
 
     db_path = tmp_path / "chart-window.sqlite3"
@@ -641,7 +696,7 @@ def test_chart_window_limits_dense_date_range_to_notable_changes(monkeypatch, tm
     init_db()
     with connect() as connection:
         product_id = connection.execute(
-            "INSERT INTO products (user_id, url, source) VALUES ((SELECT id FROM users WHERE username = 'local'), ?, ?)",
+            "INSERT INTO products (list_id, user_id, url, source) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, ?)",
             ("https://www.walmart.com/ip/example/123456", "Walmart"),
         ).lastrowid
         for index in range(13):
@@ -669,6 +724,7 @@ def test_chart_window_limits_dense_date_range_to_notable_changes(monkeypatch, tm
 
 
 def test_chart_window_collapses_unchanged_prices(monkeypatch, tmp_path):
+    """Test that chart aggregates consecutive observations with identical prices into single data points."""
     from main import app, connect, init_db
 
     db_path = tmp_path / "flat-chart-window.sqlite3"
@@ -676,7 +732,7 @@ def test_chart_window_collapses_unchanged_prices(monkeypatch, tmp_path):
     init_db()
     with connect() as connection:
         product_id = connection.execute(
-            "INSERT INTO products (user_id, url, source) VALUES ((SELECT id FROM users WHERE username = 'local'), ?, ?)",
+            "INSERT INTO products (list_id, user_id, url, source) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, ?)",
             ("https://www.walmart.com/ip/example/123456", "Walmart"),
         ).lastrowid
         for index in range(14):
@@ -691,16 +747,18 @@ def test_chart_window_collapses_unchanged_prices(monkeypatch, tmp_path):
 
 
 def test_price_chart_is_empty_without_successful_prices():
+    """Verify that price_chart returns None when no valid price observations are available."""
     assert price_chart([]) is None
 
 
 def test_watchlist_collapses_price_history_by_default(monkeypatch):
+    """Test that watchlist view collapses price history by default, requiring user action to expand."""
     from main import app, connect
 
     monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
     with connect() as connection:
         connection.execute(
-            "INSERT INTO products (user_id, url, source) VALUES ((SELECT id FROM users WHERE username = 'local'), ?, ?)",
+            "INSERT INTO products (list_id, user_id, url, source) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, ?)",
             ("https://www.walmart.com/ip/example/123456", "Walmart"),
         )
     response = app.test_client().get("/")
@@ -710,6 +768,7 @@ def test_watchlist_collapses_price_history_by_default(monkeypatch):
 
 
 def test_home_page_sends_shutdown_beacon_on_tab_close(monkeypatch):
+    """Test that home page includes JavaScript to send shutdown beacon when user closes the browser tab."""
     from main import app
 
     monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
@@ -720,6 +779,7 @@ def test_home_page_sends_shutdown_beacon_on_tab_close(monkeypatch):
 
 
 def test_shutdown_endpoint_schedules_local_server_shutdown(monkeypatch):
+    """Test that shutdown endpoint schedules the server to shut down gracefully."""
     from main import app
 
     scheduled = []
@@ -730,6 +790,7 @@ def test_shutdown_endpoint_schedules_local_server_shutdown(monkeypatch):
 
 
 def test_shutdown_endpoint_rejects_non_local_request(monkeypatch):
+    """Verify that shutdown endpoint rejects requests from non-localhost sources for security."""
     from main import app
 
     monkeypatch.setattr("main.schedule_shutdown", lambda: pytest.fail("remote shutdown must not be scheduled"))
@@ -738,6 +799,7 @@ def test_shutdown_endpoint_rejects_non_local_request(monkeypatch):
 
 
 def test_history_modal_lists_past_prices(monkeypatch, tmp_path):
+    """Test that history modal displays past price observations with dates and includes chart export options."""
     from main import app, connect, init_db
 
     db_path = tmp_path / "history.sqlite3"
@@ -745,7 +807,7 @@ def test_history_modal_lists_past_prices(monkeypatch, tmp_path):
     init_db()
     with connect() as connection:
         product_id = connection.execute(
-            "INSERT INTO products (user_id, url, source, title) VALUES ((SELECT id FROM users WHERE username = 'local'), ?, ?, ?)",
+            "INSERT INTO products (list_id, user_id, url, source, title) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, ?, ?)",
             ("https://www.walmart.com/ip/example/123456", "Walmart", "Example Item"),
         ).lastrowid
         connection.execute(
@@ -770,6 +832,7 @@ def test_history_modal_lists_past_prices(monkeypatch, tmp_path):
 
 
 def test_json_export_includes_watchlist_and_history(monkeypatch, tmp_path):
+    """Test that JSON export includes current watchlist and full price history with proper structure."""
     from main import app, connect, init_db
 
     db_path = tmp_path / "json-export.sqlite3"
@@ -777,7 +840,7 @@ def test_json_export_includes_watchlist_and_history(monkeypatch, tmp_path):
     init_db()
     with connect() as connection:
         product_id = connection.execute(
-            "INSERT INTO products (user_id, url, source, title, price, currency, checked_at) VALUES ((SELECT id FROM users WHERE username = 'local'), ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO products (list_id, user_id, url, source, title, price, currency, checked_at) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, ?, ?, ?, ?, ?)",
             ("https://www.walmart.com/ip/example/123456", "Walmart", "Example Item", 10.00, "USD", "2026-08-21T12:30:00+00:00"),
         ).lastrowid
         connection.execute(
@@ -797,6 +860,7 @@ def test_json_export_includes_watchlist_and_history(monkeypatch, tmp_path):
 
 
 def test_csv_export_includes_watchlist_and_history(monkeypatch, tmp_path):
+    """Test that CSV export includes current watchlist and price history with proper column formatting."""
     from main import app, connect, init_db
 
     db_path = tmp_path / "csv-export.sqlite3"
@@ -804,7 +868,7 @@ def test_csv_export_includes_watchlist_and_history(monkeypatch, tmp_path):
     init_db()
     with connect() as connection:
         product_id = connection.execute(
-            "INSERT INTO products (user_id, url, source, title, price) VALUES ((SELECT id FROM users WHERE username = 'local'), ?, ?, ?, ?)",
+            "INSERT INTO products (list_id, user_id, url, source, title, price) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, ?, ?, ?)",
             ("https://www.homedepot.com/p/example/987654", "Home Depot", "Example Drill", 49.99),
         ).lastrowid
         connection.execute(
@@ -824,6 +888,7 @@ def test_csv_export_includes_watchlist_and_history(monkeypatch, tmp_path):
 
 
 def test_home_page_has_env_editor_button():
+    """Verify that home page displays a button for editing environment variables."""
     from main import app
 
     response = app.test_client().get("/")
@@ -832,6 +897,7 @@ def test_home_page_has_env_editor_button():
 
 
 def test_save_env_file_updates_env(monkeypatch, tmp_path):
+    """Test that saving environment variables via form updates the .env file and reloads settings."""
     from main import app
 
     env_file = tmp_path / ".env"
@@ -847,6 +913,7 @@ def test_save_env_file_updates_env(monkeypatch, tmp_path):
 
 
 def test_api_usage_meter_shows_counts_on_hover_and_fills_by_usage(monkeypatch):
+    """Test that API usage meter displays counts on hover and fills proportionally to usage percentage."""
     import main
 
     monkeypatch.setattr(main.app, "testing", True)
@@ -875,6 +942,7 @@ def test_api_usage_meter_shows_counts_on_hover_and_fills_by_usage(monkeypatch):
 
 
 def test_unwrangle_usage_baseline_moves_up_when_balance_increases(monkeypatch):
+    """Test that Unwrangle usage baseline adjusts when account balance increases after a refund."""
     import main
 
     monkeypatch.setattr(main.app, "testing", True)
@@ -891,6 +959,7 @@ def test_unwrangle_usage_baseline_moves_up_when_balance_increases(monkeypatch):
 
 
 def test_serpapi_account_usage_includes_monthly_usage(monkeypatch):
+    """Test that SerpApi account usage endpoint correctly returns monthly usage statistics."""
     import api_clients.serpapi_client as serpapi_client
 
     class FakeResponse:

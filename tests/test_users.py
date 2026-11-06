@@ -5,6 +5,7 @@ import pytest
 
 import main
 from utils.database import admin_exists, connect
+from utils.lists import ensure_personal_list
 from utils.migrations import LATEST_VERSION, MIGRATIONS, migrate
 from utils.users import claim_local_data, create_user, local_user_id
 
@@ -38,7 +39,8 @@ def accounts(monkeypatch):
 
 def add_product(user_id, url=URL, source="Walmart"):
 	with connect() as connection:
-		return connection.execute("INSERT INTO products (user_id, url, source) VALUES (?, ?, ?)", (user_id, url, source)).lastrowid
+		list_id = ensure_personal_list(connection, user_id)
+		return connection.execute("INSERT INTO products (list_id, user_id, url, source) VALUES (?, ?, ?, ?)", (list_id, user_id, url, source)).lastrowid
 
 
 def local_id():
@@ -58,17 +60,21 @@ def test_migration_assigns_existing_rows_to_local_user(tmp_path):
 	connection.commit()
 	assert migrate(connection) == LATEST_VERSION
 	owner = local_user_id(connection)
-	for table in ("products", "scans", "stores"):
+	for table in ("products", "scans"):
 		assert connection.execute(f"SELECT DISTINCT user_id FROM {table}").fetchall() == [(owner,)]
+	personal = ensure_personal_list(connection, owner)
+	for table in ("products", "stores"):
+		assert connection.execute(f"SELECT DISTINCT list_id FROM {table}").fetchall() == [(personal,)]
 
 
-def test_store_numbers_are_unique_per_user_not_globally(accounts):
+def test_store_numbers_are_unique_per_list_not_globally(accounts):
 	ids = accounts.ids
 	with connect() as connection:
+		lists = {user: ensure_personal_list(connection, ids[user]) for user in ("alice", "bob")}
 		for user in ("alice", "bob"):
-			connection.execute("INSERT INTO stores (user_id, retailer, store_id, name, location) VALUES (?, 'Walmart', '4638', 'S', 'L')", (ids[user],))
+			connection.execute("INSERT INTO stores (list_id, retailer, store_id, name, location) VALUES (?, 'Walmart', '4638', 'S', 'L')", (lists[user],))
 		with pytest.raises(sqlite3.IntegrityError):
-			connection.execute("INSERT INTO stores (user_id, retailer, store_id, name, location) VALUES (?, 'Walmart', '4638', 'S', 'L')", (ids["alice"],))
+			connection.execute("INSERT INTO stores (list_id, retailer, store_id, name, location) VALUES (?, 'Walmart', '4638', 'S', 'L')", (lists["alice"],))
 
 
 def test_local_placeholder_is_not_an_admin_account():
@@ -102,7 +108,8 @@ def test_users_only_see_their_own_watchlist(accounts):
 	add_product(accounts.ids["alice"], "https://www.walmart.com/ip/alice-item/1")
 	add_product(accounts.ids["bob"], "https://www.walmart.com/ip/bob-item/2")
 	page = accounts("alice").get("/").get_data(as_text=True)
-	assert "alice-item" in page and "bob-item" not in page
+	assert "alice-item" in page 
+	assert "bob-item" not in page
 
 
 @pytest.mark.parametrize("method, path", [
@@ -127,7 +134,8 @@ def test_other_users_product_ids_return_404(accounts, monkeypatch, method, path)
 
 def test_other_users_stores_cannot_be_removed(accounts):
 	with connect() as connection:
-		store_id = connection.execute("INSERT INTO stores (user_id, retailer, store_id, name, location) VALUES (?, 'Walmart', '9', 'S', 'L')", (accounts.ids["bob"],)).lastrowid
+		bobs_list = ensure_personal_list(connection, accounts.ids["bob"])
+		store_id = connection.execute("INSERT INTO stores (list_id, retailer, store_id, name, location) VALUES (?, 'Walmart', '9', 'S', 'L')", (bobs_list,)).lastrowid
 	assert accounts("alice").post(f"/stores/{store_id}/remove").status_code == 404
 	with connect() as connection:
 		assert connection.execute("SELECT COUNT(*) FROM stores").fetchone()[0] == 1
@@ -143,13 +151,15 @@ def test_recheck_selected_ignores_other_users_products(accounts, monkeypatch):
 
 def test_product_limit_is_per_user(accounts, monkeypatch):
 	monkeypatch.setattr(main, "MAX_URLS", 1)
-	alice, bob = accounts("alice"), accounts("bob")
+	alice, bob = accounts("root"), accounts("bob")
 	alice.post("/add", data={"url": URL})
 	alice.post("/add", data={"url": "https://www.walmart.com/ip/other/2"})
-	bob.post("/add", data={"url": URL})
+	with connect() as connection:
+		connection.execute("INSERT INTO products (user_id, url, source) VALUES (?, ?, 'Walmart')", (accounts.ids["bob"], URL))
+	assert bob.post("/add", data={"url": URL}).status_code == 403
 	with connect() as connection:
 		counts = dict(connection.execute("SELECT user_id, COUNT(*) FROM products GROUP BY user_id").fetchall())
-	assert counts == {accounts.ids["alice"]: 1, accounts.ids["bob"]: 1}
+	assert counts == {accounts.ids["root"]: 1, accounts.ids["bob"]: 1}
 
 
 def test_scan_only_touches_own_products_and_daily_limit_is_per_user(accounts, monkeypatch):
@@ -185,7 +195,8 @@ def test_exports_contain_only_the_current_users_items(accounts):
 	add_product(accounts.ids["alice"], "https://www.walmart.com/ip/alice-item/1")
 	add_product(accounts.ids["bob"], "https://www.walmart.com/ip/bob-item/2")
 	body = accounts("alice").get("/export/json").get_data(as_text=True)
-	assert "alice-item" in body and "bob-item" not in body
+	assert "alice-item" in body 
+	assert "bob-item" not in body
 	assert "bob-item" not in accounts("alice").get("/export/csv").get_data(as_text=True)
 
 
@@ -199,14 +210,17 @@ def test_api_settings_and_usage_are_admin_only(accounts, monkeypatch):
 	assert accounts("alice").post("/settings/provider", data={"provider": "auto"}).status_code == 403
 	assert accounts("alice").post("/settings/env", data={"env_content": "X=1"}).status_code == 403
 	user_page = accounts("alice").get("/").data
-	assert b"api-usage" not in user_page and b"Global API provider" not in user_page
+	assert b"api-usage" not in user_page 
+	assert b"Global API provider" not in user_page
 	admin_page = accounts("root").get("/").data
-	assert b"api-usage" in admin_page and b"Global API provider" in admin_page
+	assert b"api-usage" in admin_page 
+	assert b"Global API provider" in admin_page
 
 
 def test_requests_without_a_login_are_sent_to_the_login_page(accounts):
 	response = main.app.test_client().get("/")
-	assert response.status_code == 302 and "/login" in response.headers["Location"]
+	assert response.status_code == 302 
+	assert "/login" in response.headers["Location"]
 	client = accounts("alice")
 	with connect() as connection:
 		connection.execute("UPDATE users SET disabled = 1 WHERE id = ?", (accounts.ids["alice"],))
@@ -216,4 +230,5 @@ def test_requests_without_a_login_are_sent_to_the_login_page(accounts):
 def test_local_mode_needs_no_login_and_acts_as_admin():
 	assert main.app.test_client().get("/").status_code == 200
 	with main.app.test_request_context("/"):
-		assert main.current_user()["username"] == "local" and main.is_admin()
+		assert main.current_user()["username"] == "local" 
+		assert main.is_admin()

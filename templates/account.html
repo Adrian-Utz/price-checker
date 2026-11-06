@@ -11,7 +11,7 @@ Written by: AJ Utz
 {% block header_links %}
 <nav class="user-bar">
 	<a href="{{ url_for('index') }}">Watchlist</a>
-	{% if is_admin %}<a href="{{ url_for('admin_users') }}">Users</a>{% endif %}
+	{% if is_admin %}<a href="{{ url_for('admin_users') }}">Users</a> <a href="{{ url_for('admin_lists') }}">Lists</a>{% endif %}
 </nav>
 {% endblock %}
 {% block content %}

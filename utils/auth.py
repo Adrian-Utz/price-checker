@@ -143,7 +143,7 @@ def list_users(connection: sqlite3.Connection) -> list[sqlite3.Row]:
 	return connection.execute(
 		"""
 		SELECT u.id, u.username, u.role, u.disabled, u.created_at, u.last_login_at, u.locked_until,
-			(SELECT COUNT(*) FROM products WHERE user_id = u.id) AS product_count
+			(SELECT COUNT(*) FROM products WHERE list_id IN (SELECT list_id FROM list_members WHERE user_id = u.id)) AS product_count
 		FROM users u WHERE u.username != ? ORDER BY u.username COLLATE NOCASE
 		""",
 		(LOCAL_USERNAME,),

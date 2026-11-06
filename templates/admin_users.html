@@ -11,6 +11,7 @@ Written by: AJ Utz
 {% block header_links %}
 <nav class="user-bar">
 	<a href="{{ url_for('index') }}">Watchlist</a>
+	<a href="{{ url_for('admin_lists') }}">Lists</a>
 	<a href="{{ url_for('account') }}">Account</a>
 </nav>
 {% endblock %}
@@ -31,7 +32,16 @@ Written by: AJ Utz
 			<span class="status">{{ user.role }}</span>
 			{% if user.disabled %}<span class="status warning">disabled</span>{% endif %}
 			{% if user.locked_until and user.locked_until > now %}<span class="status warning">locked</span>{% endif %}
-			<span class="muted">{{ user.product_count }} of {{ max_urls }} products · last sign-in {{ user.last_login_at.replace('T', ' ')[:16] if user.last_login_at else 'never' }}</span>
+			<span class="muted">last sign-in {{ user.last_login_at.replace('T', ' ')[:16] if user.last_login_at else 'never' }}</span>
+			<div class="user-lists">
+				{% if user_lists.get(user.id) %}
+				<span class="muted">Lists:</span>
+				{% for name in user_lists[user.id] %}<span class="chip">{{ name }}</span>{% endfor %}
+				{% else %}
+				<span class="status warning">No list: sees no items</span>
+				{% endif %}
+				<a href="{{ url_for('admin_lists') }}">Manage</a>
+			</div>
 		</div>
 		<div class="user-actions">
 			{% if user.id != current_user_id %}

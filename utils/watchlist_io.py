@@ -43,8 +43,10 @@ def source_for(url: str) -> str:
 
 
 def watchlist_export_rows(connection: sqlite3.Connection, user_id: int) -> list[dict[str, object]]:
-	"""Read one user's watchlist products and price history into export-ready rows."""
-	products = connection.execute("SELECT * FROM products WHERE user_id = ? ORDER BY id", (user_id,)).fetchall()
+	"""Read the products (and price history) on every list this user is assigned to into export-ready rows."""
+	products = connection.execute(
+		"SELECT * FROM products WHERE list_id IN (SELECT list_id FROM list_members WHERE user_id = ?) ORDER BY id", (user_id,)
+	).fetchall()
 	rows = []
 	for product in products:
 		host = urlparse(product["url"]).netloc.lower().removeprefix("www.")
@@ -189,19 +191,19 @@ def _timestamp(value: object) -> str | None:
 	return value
 
 
-def merge_watchlist(connection: sqlite3.Connection, user_id: int, products: list[dict[str, object]], *, max_products: int, normalize_url: Callable[[str], str]) -> dict[str, int]:
-	"""Merge parsed watchlist rows into one user's data without touching anything else.
+def merge_watchlist(connection: sqlite3.Connection, list_id: int, products: list[dict[str, object]], *, max_products: int, normalize_url: Callable[[str], str], user_id: int | None = None) -> dict[str, int]:
+	"""Merge parsed watchlist rows into one list without touching anything else.
 
 	A product already tracked (same URL and store) keeps its row and only gains price history it
-	doesn't have yet. New products are added until the user's product limit is reached.
-	Every row is written with this user's id, whatever the file claims.
+	doesn't have yet. New products are added until the list's product limit is reached.
+	Every row is written to this list (and credited to user_id), whatever the file claims.
 	"""
 	if len(products) > MAX_IMPORT_PRODUCTS:
 		raise ValueError(f"That file has more than {MAX_IMPORT_PRODUCTS} products.")
 	result = {"added": 0, "merged": 0, "observations": 0, "skipped": 0, "over_limit": 0}
 	existing = {
 		(row["url"], row["store_id"] or ""): row["id"]
-		for row in connection.execute("SELECT id, url, store_id FROM products WHERE user_id = ?", (user_id,))
+		for row in connection.execute("SELECT id, url, store_id FROM products WHERE list_id = ?", (list_id,))
 	}
 	total = len(existing)
 	for product in products:
@@ -222,8 +224,8 @@ def merge_watchlist(connection: sqlite3.Connection, user_id: int, products: list
 				continue
 			provider = product.get("api_provider")
 			cursor = connection.execute(
-				"INSERT INTO products (user_id, url, title, source, store_id, price, bulk_price, bulk_quantity, currency, checked_at, error, retailer_product_id, api_provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				(user_id, url, _text(product.get("title")), _text(product.get("source"), 100) or source_for(url), store_id,
+				"INSERT INTO products (list_id, user_id, url, title, source, store_id, price, bulk_price, bulk_quantity, currency, checked_at, error, retailer_product_id, api_provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				(list_id, user_id, url, _text(product.get("title")), _text(product.get("source"), 100) or source_for(url), store_id,
 					_number(product.get("price")), _number(product.get("bulk_price")) or None, _number(product.get("bulk_quantity"), int) or None,
 					_text(product.get("currency"), 8), _timestamp(product.get("checked_at")), _text(product.get("error")),
 					_text(product.get("product_id"), 100), provider if provider in ITEM_PROVIDERS else None),

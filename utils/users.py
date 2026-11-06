@@ -82,5 +82,6 @@ def claim_local_data(connection: sqlite3.Connection, user_id: int) -> None:
 	local_id = local_user_id(connection)
 	if user_id == local_id:
 		return
-	for table in ("products", "stores", "scans"):
+	for table in ("products", "scans"):
 		connection.execute(f"UPDATE {table} SET user_id = ? WHERE user_id = ?", (user_id, local_id))
+	connection.execute("UPDATE OR IGNORE list_members SET user_id = ? WHERE user_id = ?", (user_id, local_id))

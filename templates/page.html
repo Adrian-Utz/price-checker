@@ -76,7 +76,7 @@ Written by: AJ Utz
 				{% if accounts_enabled %}
 				<span class="user-bar">
 					<span class="muted">Signed in as <strong>{{ current_username }}</strong></span>
-					{% if is_admin %}<a href="{{ url_for('admin_users') }}">Users</a>{% endif %}
+					{% if is_admin %}<a href="{{ url_for('admin_users') }}">Users</a> <a href="{{ url_for('admin_lists') }}">Lists</a>{% endif %}
 					<a href="{{ url_for('account') }}">Account</a>
 					<form method="post" action="{{ url_for('logout') }}">
 						<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -134,18 +134,25 @@ Written by: AJ Utz
 	{% if is_admin and not serpapi_ready %}<p class="notice"><strong>One setup step:</strong> set <code>SERPAPI_API_KEY</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
 	{% if is_admin and not unwrangle_ready %}<p class="notice"><strong>One setup step:</strong> set <code>UNWRANGLE_API_KEY</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
 	{% if is_admin and not apify_ready %}<p class="notice"><strong>One setup step:</strong> set <code>APIFY_API_TOKEN</code> in the same terminal used to start this app, then restart it. Or create an .env file.</p>{% endif %}
+	{% if can_edit_watchlist %}
 	<section>
 		<!--In this section we have a place for user input, and the option to track another store-->
 		<h2>Track a product</h2>
 		<!--Here the user inputs a link to a supported retailer and the program adds it to the list-->
 		<form method="post" action="{{ url_for('add_url') }}">
 			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			{% if add_targets | length > 1 %}
+			<select name="list_id" aria-label="List to add to">
+				{% for target in add_targets %}<option value="{{ target.id }}">{{ target.name }}</option>{% endfor %}
+			</select>
+			{% endif %}
 			<input name="url" type="url" placeholder="Paste a product URL here" aria-label="Product URL" required>
 			<button>Add URL</button>
 			<label class="duplicate-option"><input name="allow_duplicate" type="checkbox"> Track another store</label>
 		</form>
 		<p class="help">Supported now: Walmart and Home Depot (via SerpApi), plus Walmart, Home Depot, Lowes, Ace Hardware, and Sams Club (via Unwrangle). Check “Track another store” when adding the same product for a different store. You can track up to {{ max_urls }} URLs.</p>
 	</section>
+			{% endif %}
 	<section>
 		<!--Here the buttons perform the following tasks. Daily Check: If not in dev mode, press to check the entire list with the selected API provider.
 		Export JSON: Exports a JSON file of your database. Export CSV: Exports a CSV file of your database, Export Database: Exports a sqlite3 file of your database
@@ -163,13 +170,14 @@ Written by: AJ Utz
 		<p class="help">Each URL is checked through the selected API provider ({{ api_provider }}), then saved locally so you can review the result later.</p>
 		{% if quota.api %}<p class="help">API budget today: {{ quota.api.used }} of {{ quota.api.limit }} calls used (resets at midnight UTC).</p>{% endif %}
 		<div class="watchlist-actions">
-			<button class="export-button import-button" type="button" data-open-dialog="import-db">Import watchlist</button>
+			{% if can_edit_watchlist %}<button class="export-button import-button" type="button" data-open-dialog="import-db">Import watchlist</button>{% endif %}
 			<div class="export-actions">
 				<a class="export-button" href="{{ url_for('export_watchlist_json') }}">Export JSON</a>
 				<a class="export-button" href="{{ url_for('export_watchlist_csv') }}">Export CSV</a>
 				{% if allow_database_files %}<a class="export-button" href="{{ url_for('export_watchlist_db') }}">Export database</a>{% endif %}
 			</div>
 		</div>
+		{% if can_edit_watchlist %}
 		<dialog class="history-modal" id="import-db">
 			<div class="modal-header">
 				<div>
@@ -183,6 +191,12 @@ Written by: AJ Utz
 			<div class="modal-content">
 				<form method="post" action="{{ url_for('import_watchlist') }}" enctype="multipart/form-data">
 					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					{% if add_targets | length > 1 %}
+					<label for="import-target">Import into list</label>
+					<select id="import-target" name="list_id">
+						{% for target in add_targets %}<option value="{{ target.id }}">{{ target.name }}</option>{% endfor %}
+					</select>
+					{% endif %}
 					<p class="help">Pick a .json, .csv, or .sqlite3 watchlist exported from this app (yours or someone else's). It is merged into your watchlist: nothing is replaced or deleted, products you already track just gain any missing price history, and the {{ max_urls }}-product limit still applies.</p>
 					<label for="database-file">Watchlist file</label>
 					<input id="database-file" name="database_file" type="file" accept=".sqlite3,.sqlite,.db,.csv,.json" required>
@@ -192,10 +206,27 @@ Written by: AJ Utz
 				</form>
 			</div>
 		</dialog>
+		{% endif %}
 	</section>
 	<section>
 		<!--Starting section of your watchlist-->
 		<h2>Your watchlist <span class="muted">({{ products|length }})</span></h2>
+		{% if show_lists %}
+		<form id="list-filter" class="list-filter" method="get" action="{{ url_for('index') }}">
+			<label for="list-filter-select">Show</label>
+			<select id="list-filter-select" name="list">
+				<option value="">All lists</option>
+				{% for item in my_lists %}<option value="{{ item.id }}" {{ 'selected' if item.id == selected_list }}>{{ item.name }}</option>{% endfor %}
+			</select>
+			<button type="submit" id="list-filter-apply">Apply</button>
+		</form>
+		<script nonce="{{ csp_nonce }}">
+			const listFilter = document.getElementById("list-filter");
+			document.getElementById("list-filter-apply").hidden = true;
+			document.getElementById("list-filter-select").addEventListener("change", () => listFilter.submit());
+		</script>
+		{% endif %}
+		{% if not products and selected_list %}<p class="muted">This list has no items yet.</p>{% endif %}
 		{% if products %}
 		<form id="recheck-selected-form" method="post" action="{{ url_for('recheck_selected') }}">
 			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -216,11 +247,13 @@ Written by: AJ Utz
 			<tbody>
 				<!--As long as there is a product in the table show it on the watchlist.-->
 				{% for product in products %}
+				{% set list_stores = stores_by_list.get(product.list_id, {}) %}
 				<tr>
 					<td><input type="checkbox" class="select-product" name="product_ids" value="{{ product.id }}" form="recheck-selected-form" aria-label="Select {{ product.title or product.url }}"></td>
 					<td>
 						<a class="product-link" href="{{ product.url }}" rel="noreferrer">{{ product.title or 'Product waiting for first check' }}</a>
 						<span class="product-url muted">{{ product.url }}</span>
+						{% if show_lists %}<span class="store-number">List: {{ product.list_name }}</span>{% endif %}
 						{% if product.error %}
 						<div class="error">
 							<strong>Could not get price:</strong> 
@@ -229,7 +262,7 @@ Written by: AJ Utz
 					</td>
 					<td>
 						<button class="retailer-button" type="button" data-open-dialog="store-{{ product.id }}">{{ product.source }}</button>
-						{% set selected_store = (stores_by_retailer.get(product.source, []) | selectattr('store_id', 'equalto', product.store_id) | list | first) %}
+						{% set selected_store = (list_stores.get(product.source, []) | selectattr('store_id', 'equalto', product.store_id) | list | first) %}
 						{% if selected_store %}<span class="store-number">Store {{ selected_store.store_id }} · {{ selected_store.name }}</span>{% elif product.store_id %}<span class="store-number">Store {{ product.store_id }}</span>{% else %}<span class="store-number muted">All stores</span>{% endif %}
 						{% if product.api_provider %}<span class="store-number">API: {{ product.api_provider }}</span>{% endif %}
 						<dialog class="history-modal store-modal" id="store-{{ product.id }}">
@@ -258,14 +291,14 @@ Written by: AJ Utz
 									<label for="store-id-{{ product.id }}">Saved store</label>
 									<select id="store-id-{{ product.id }}" name="store_id">
 										<option value="">All stores</option>
-										{% for store in stores_by_retailer.get(product.source, []) %}
+										{% for store in list_stores.get(product.source, []) %}
 										<option value="{{ store.store_id }}" {% if product.store_id == store.store_id %}selected{% endif %}>{{ store.name }} · {{ store.location }} · Store {{ store.store_id }}</option>
 										{% endfor %}
 									</select>
 									<div class="modal-actions"><button type="submit">Save store</button></div>
 								</form>
 								<hr>
-								{% set saved_stores = stores_by_retailer.get(product.source, []) %}
+								{% set saved_stores = list_stores.get(product.source, []) %}
 								{% if saved_stores %}
 								<div class="saved-stores">
 									<p class="eyebrow">Manage saved stores</p>
@@ -284,6 +317,7 @@ Written by: AJ Utz
 								<form method="post" action="{{ url_for('add_store') }}">
 									<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 									<input type="hidden" name="retailer" value="{{ product.source }}">
+									<input type="hidden" name="list_id" value="{{ product.list_id }}">
 									<p class="eyebrow">Add saved store</p>
 									<label for="store-number-{{ product.id }}">Store number</label>
 									<input id="store-number-{{ product.id }}" name="store_id" inputmode="numeric" pattern="[0-9]*" placeholder="4638" required>
@@ -319,10 +353,10 @@ Written by: AJ Utz
 								<button class="recheck-button" title="Re-check this item">Re-check</button>
 							</form>
 							{% endif %}
-							<form method="post" action="{{ url_for('remove_url', product_id=product.id) }}">
+							{% if can_edit_watchlist %}<form method="post" action="{{ url_for('remove_url', product_id=product.id) }}">
 								<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 								<button class="remove" title="Remove URL">Remove from Search</button>
-							</form>
+							</form>{% endif %}
 						</div>
 						<dialog class="history-modal" id="history-{{ product.id }}">
 							<div class="modal-header">

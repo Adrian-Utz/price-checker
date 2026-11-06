@@ -1,0 +1,78 @@
+<!--
+Admin page for creating shared lists and choosing which users see each one
+
+Last Update: 11/2/2026
+Written on: 11/2/2026
+Written by: AJ Utz
+-->
+
+{% extends "auth_base.html" %}
+{% block title %}Lists - Price Checker{% endblock %}
+{% block header_links %}
+<nav class="user-bar">
+	<a href="{{ url_for('index') }}">Watchlist</a>
+	<a href="{{ url_for('admin_users') }}">Users</a>
+	<a href="{{ url_for('account') }}">Account</a>
+</nav>
+{% endblock %}
+{% block content %}
+<section>
+	<h2>Lists</h2>
+	<p class="help">A list is a shared set of items. Every user on a list sees the same items, and a store or API change one of them makes shows for all of them. A user sees only the lists they are on. Only administrators add or remove items (up to {{ max_urls }} per list).</p>
+	{% if unassigned %}
+	<p class="notice">Not on any list, so they see nothing yet: <strong>{{ unassigned | map(attribute='username') | join(', ') }}</strong></p>
+	{% endif %}
+</section>
+{% for list in lists %}
+<section class="list-card">
+	<div class="list-head">
+		<h3>{{ list.name }}</h3>
+		<span class="muted">{{ list.product_count }} item{{ '' if list.product_count == 1 else 's' }}</span>
+	</div>
+	<div class="list-members">
+		<span class="muted">Users on this list:</span>
+		{% for member in list.members %}
+		<form method="post" action="{{ url_for('admin_remove_list_member', list_id=list.id, user_id=member.id) }}" class="chip">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			{{ member.username }}
+			<button type="submit" class="chip-remove" aria-label="Remove {{ member.username }} from {{ list.name }}" title="Remove {{ member.username }} from this list">&times;</button>
+		</form>
+		{% else %}
+		<span class="muted">nobody yet</span>
+		{% endfor %}
+	</div>
+	<div class="list-actions">
+		{% if list.available %}
+		<form method="post" action="{{ url_for('admin_add_list_member', list_id=list.id) }}">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			<select name="user_id" aria-label="User to add to {{ list.name }}" required>
+				<option value="" disabled selected>Add a user…</option>
+				{% for user in list.available %}<option value="{{ user.id }}">{{ user.username }}</option>{% endfor %}
+			</select>
+			<button type="submit">Add</button>
+		</form>
+		{% else %}
+		<span class="muted">Everyone is already on this list.</span>
+		{% endif %}
+		{% if list.product_count %}
+		<span class="muted">Remove its items before deleting the list.</span>
+		{% else %}
+		<form method="post" action="{{ url_for('admin_delete_list', list_id=list.id) }}" data-confirm="Delete the list {{ list.name }}?">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			<button type="submit" class="remove">Delete list</button>
+		</form>
+		{% endif %}
+	</div>
+</section>
+{% else %}
+<section><p class="muted">No lists yet. Create one below, then add users to it.</p></section>
+{% endfor %}
+<section>
+	<h2>Create a list</h2>
+	<form method="post" action="{{ url_for('admin_create_list') }}">
+		<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+		<input name="name" type="text" placeholder="List name, e.g. Kitchen" aria-label="List name" maxlength="60" required>
+		<button type="submit">Create list</button>
+	</form>
+</section>
+{% endblock %}

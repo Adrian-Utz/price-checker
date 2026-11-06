@@ -70,6 +70,7 @@ from utils.migrations import LOCAL_USERNAME, UNUSABLE_PASSWORD_HASH
 from utils.serving import ensure_tls_files, serve, start_scheduler
 from utils.users import claim_local_data, create_user, get_user, local_user_id, real_user_count
 from utils import auth
+from utils import lists as shared_lists
 from utils.limits import BudgetExceeded, calls_today, reserve_api_call
 from utils.scanner import (
 	refresh_product as _refresh_product,
@@ -649,10 +650,18 @@ def run_scan(user_id: int) -> bool:
 def refresh_product(product: sqlite3.Row) -> None:
 	# Reserve the credit before fetching: a failed fetch would otherwise overwrite the stored price with an error.
 	# Administrators' calls are still counted, but never refused (a limit of 0 means unlimited).
-	unlimited = user_has_dev_access(product["user_id"])
+	# A scan carries the user who started it; anything else (a re-check) is paid for by the signed-in user.
+	columns = product.keys()
+	if "charge_user_id" in columns:
+		payer = product["charge_user_id"]
+	elif has_request_context():
+		payer = current_user_id()
+	else:
+		payer = product["user_id"]
+	unlimited = user_has_dev_access(payer)
 	with connect() as connection:
 		reserve_api_call(
-			connection, product["user_id"],
+			connection, payer,
 			user_limit=0 if unlimited else SETTINGS.user_daily_api_calls,
 			global_limit=0 if unlimited else SETTINGS.global_daily_api_calls,
 		)
@@ -730,10 +739,42 @@ def require_admin() -> None:
 		abort(403, description="Only an administrator can do that.")
 
 
+def can_edit_watchlist() -> bool:
+	"""Local mode has one implicit owner. On shared servers only admins add links or import data."""
+	return SETTINGS.is_local or is_admin()
+
+
+def require_watchlist_editor() -> None:
+	if not can_edit_watchlist():
+		abort(403, description="Only an administrator can add links or import data.")
+
+
+def target_lists(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+	"""Lists the current user may add links or imports to: any list for an administrator, none for anyone else."""
+	if not can_edit_watchlist():
+		return []
+	if SETTINGS.is_local:
+		return shared_lists.lists_for_user(connection, current_user_id())
+	return connection.execute("SELECT id, name FROM lists ORDER BY name COLLATE NOCASE").fetchall()
+
+
+def resolve_target_list(connection: sqlite3.Connection) -> int:
+	"""The list a new link or import goes into: the one posted in the form, or the only one available."""
+	choices = target_lists(connection)
+	posted = request.form.get("list_id", "").strip()
+	if posted:
+		if not any(str(choice["id"]) == posted for choice in choices):
+			raise ValueError("Choose a valid list.")
+		return int(posted)
+	if len(choices) == 1:
+		return choices[0]["id"]
+	raise ValueError("Choose a list." if choices else "There is no list to add to yet. Create one under Lists first.")
+
+
 def owned_product(connection: sqlite3.Connection, product_id: int) -> sqlite3.Row:
-	"""Fetch a product only if the current user owns it. Missing and not-yours look identical (404)."""
+	"""Fetch a product only if it is on one of the current user's lists. Missing and not-yours look identical (404)."""
 	product = connection.execute(
-		"SELECT * FROM products WHERE id = ? AND user_id = ?", (product_id, current_user_id())
+		f"SELECT * FROM products WHERE id = ? AND list_id IN ({shared_lists.MEMBER_LISTS_SQL})", (product_id, current_user_id())
 	).fetchone()
 	if product is None:
 		abort(404, description="Product was not found.")
@@ -896,9 +937,12 @@ def change_own_password():
 def render_admin_users(message: str | None = None, error: str | None = None, invite_url: str | None = None, status: int = 200):
 	with connect() as connection:
 		users = auth.list_users(connection)
+		user_lists: dict[int, list[str]] = {}
+		for row in connection.execute("SELECT m.user_id, l.name FROM list_members m JOIN lists l ON l.id = m.list_id ORDER BY l.name COLLATE NOCASE"):
+			user_lists.setdefault(row["user_id"], []).append(row["name"])
 		invites = auth.list_invites(connection) if SETTINGS.registration == "invite" else []
 	return render_template(
-		"admin_users.html", csrf_token=session["csrf_token"], users=users, invites=invites, invite_url=invite_url,
+		"admin_users.html", csrf_token=session["csrf_token"], users=users, user_lists=user_lists, invites=invites, invite_url=invite_url,
 		registration=SETTINGS.registration, current_user_id=current_user_id(), message=message, error=error,
 		max_urls=MAX_URLS, now=auth.utc_text(),
 	), status
@@ -979,18 +1023,86 @@ def admin_revoke_invite(invite_id: int):
 	return admin_action(lambda connection: auth.revoke_invite(connection, invite_id), "Invite revoked.")
 
 
+def render_admin_lists(message: str | None = None, error: str | None = None, status: int = 200):
+	with connect() as connection:
+		lists = shared_lists.all_lists(connection)
+		users = auth.list_users(connection)
+	for item in lists:
+		member_ids = {member["id"] for member in item["members"]}
+		item["available"] = [user for user in users if user["id"] not in member_ids and not user["disabled"]]
+	assigned = {member["id"] for item in lists for member in item["members"]}
+	unassigned = [user for user in users if user["id"] not in assigned and not user["disabled"]]
+	return render_template(
+		"admin_lists.html", csrf_token=session["csrf_token"], lists=lists, unassigned=unassigned, max_urls=MAX_URLS, message=message, error=error,
+	), status
+
+
+def list_action(action, success_message: str):
+	"""Run a list change; a refused change is reported on the page instead of crashing."""
+	require_accounts()
+	require_admin()
+	try:
+		with connect() as connection:
+			action(connection)
+	except ValueError as problem:
+		return render_admin_lists(error=str(problem), status=400)
+	return redirect(url_for("admin_lists", message=success_message))
+
+
+@app.get("/admin/lists")
+def admin_lists():
+	require_accounts()
+	require_admin()
+	return render_admin_lists(message=request.args.get("message"))
+
+
+@app.post("/admin/lists/create")
+def admin_create_list():
+	return list_action(lambda connection: shared_lists.create_list(connection, request.form.get("name", "")), "List created.")
+
+
+@app.post("/admin/lists/<int:list_id>/delete")
+def admin_delete_list(list_id: int):
+	return list_action(lambda connection: shared_lists.delete_list(connection, list_id), "List deleted.")
+
+
+@app.post("/admin/lists/<int:list_id>/members/add")
+def admin_add_list_member(list_id: int):
+	user_id = request.form.get("user_id", "")
+	return list_action(
+		lambda connection: shared_lists.add_member(connection, list_id, int(user_id) if user_id.isdigit() else 0), "User added to the list.",
+	)
+
+
+@app.post("/admin/lists/<int:list_id>/members/<int:user_id>/remove")
+def admin_remove_list_member(list_id: int, user_id: int):
+	return list_action(lambda connection: shared_lists.remove_member(connection, list_id, user_id), "User removed from the list.")
+
+
 @app.route("/", methods=["GET"])
 def index():
 	"""Run the program in the user's prefered web browser"""
 	user_id = current_user_id()
 	#Connect to the database using the connect function
 	with connect() as connection:
-		#Execute a SQL query to retrieve this user's products and order them by their ID
-		product_rows = connection.execute("SELECT * FROM products WHERE user_id = ? ORDER BY id", (user_id,)).fetchall()
-		store_rows = connection.execute("SELECT * FROM stores WHERE user_id = ? ORDER BY retailer, name, store_id", (user_id,)).fetchall()
-		stores_by_retailer = {}
+		#Execute a SQL query to retrieve the products on this user's lists and order them by their ID
+		product_rows = connection.execute(
+			f"SELECT p.*, l.name AS list_name FROM products p JOIN lists l ON l.id = p.list_id WHERE p.list_id IN ({shared_lists.MEMBER_LISTS_SQL}) ORDER BY p.id",
+			(user_id,),
+		).fetchall()
+		store_rows = connection.execute(
+			f"SELECT * FROM stores WHERE list_id IN ({shared_lists.MEMBER_LISTS_SQL}) ORDER BY retailer, name, store_id", (user_id,)
+		).fetchall()
+		my_lists = shared_lists.lists_for_user(connection, user_id)
+		# "All lists" unless the URL names one of this user's own lists; anything else falls back to all.
+		requested = request.args.get("list", "")
+		selected_list = int(requested) if requested.isdigit() and any(item["id"] == int(requested) for item in my_lists) else None
+		if selected_list is not None:
+			product_rows = [row for row in product_rows if row["list_id"] == selected_list]
+		add_targets = target_lists(connection)
+		stores_by_list = {}
 		for store in store_rows:
-			stores_by_retailer.setdefault(store["retailer"], []).append(dict(store))
+			stores_by_list.setdefault(store["list_id"], {}).setdefault(store["retailer"], []).append(dict(store))
 		products = [] #Empty list to store product views
 		for product in product_rows:
 			#Execute a SQL query to retrieve the history of observations for the current product
@@ -1034,7 +1146,11 @@ def index():
 	return render_template(
 		"page.html", 
 		products=products, 
-		stores_by_retailer=stores_by_retailer, 
+		stores_by_list=stores_by_list, 
+		show_lists=len(my_lists) > 1,
+		my_lists=my_lists,
+		selected_list=selected_list,
+		add_targets=add_targets,
 		max_urls=MAX_URLS, 
 		can_scan=scan_allowed(user_id), 
 		last_scan=last_scan, 
@@ -1043,7 +1159,7 @@ def index():
 		is_admin=is_admin(),
 		current_username=current_user()["username"],
 		accounts_enabled=not SETTINGS.is_local,
-		quota=quota_view(user_id, len(products)),
+		quota=quota_view(user_id, max((sum(1 for p in products if p["list_id"] == list_id) for list_id in {p["list_id"] for p in products}), default=0)),
 		serpapi_ready=serpapi_ready(), 
 		unwrangle_ready=unwrangle_ready(), 
 		apify_ready=apify_ready(),
@@ -1058,6 +1174,7 @@ def index():
 		releases_url=check_for_update.get_latest_release_url(),
 		api_usage=api_usage_summary() if is_admin() else None,
 		allow_database_files=SETTINGS.is_local,
+		can_edit_watchlist=can_edit_watchlist(),
 		providers_for_retailer=providers_for_retailer,
 	)
 
@@ -1146,17 +1263,19 @@ def chart_window(product_id: int):
 @app.post("/add")
 def add_url():
 	"""Add a url to the database"""
+	require_watchlist_editor()
 	user_id = current_user_id()
 	try:
 		normalized = normalize_url(request.form.get("url", ""))#Normilize the URl
 		with connect() as connection: #Connect to the database
-			#Check if this user's number of products exceeds the max limit
-			if connection.execute("SELECT COUNT(*) FROM products WHERE user_id = ?", (user_id,)).fetchone()[0] >= MAX_URLS:
+			list_id = resolve_target_list(connection)
+			#Check if this list's number of products exceeds the max limit
+			if connection.execute("SELECT COUNT(*) FROM products WHERE list_id = ?", (list_id,)).fetchone()[0] >= MAX_URLS:
 				raise ValueError(f"The watchlist limit is {MAX_URLS} URLs.")
-			duplicate_exists = connection.execute("SELECT 1 FROM products WHERE user_id = ? AND url = ? LIMIT 1", (user_id, normalized)).fetchone()
+			duplicate_exists = connection.execute("SELECT 1 FROM products WHERE list_id = ? AND url = ? LIMIT 1", (list_id, normalized)).fetchone()
 			if duplicate_exists and request.form.get("allow_duplicate") != "on":
 				return redirect(url_for("index", message="That URL is already tracked. Check 'Track another store' to add it again."))
-			connection.execute("INSERT INTO products (user_id, url, source) VALUES (?, ?, ?)", (user_id, normalized, source_for(normalized)))
+			connection.execute("INSERT INTO products (list_id, user_id, url, source) VALUES (?, ?, ?, ?)", (list_id, user_id, normalized, source_for(normalized)))
 		#Set message based on whether a duplicate was explicitly allowed
 		message = "URL added as another store." if duplicate_exists else "URL added."
 	except ValueError as error:
@@ -1172,10 +1291,10 @@ def set_store(product_id: int):
 	with connect() as connection:
 		product = owned_product(connection, product_id)
 		if store_id and not connection.execute(
-			"SELECT 1 FROM stores WHERE user_id = ? AND store_id = ? AND retailer = ?", (current_user_id(), store_id, product["source"])
+			"SELECT 1 FROM stores WHERE list_id = ? AND store_id = ? AND retailer = ?", (product["list_id"], store_id, product["source"])
 		).fetchone():
 			return redirect(url_for("index", message="Choose a saved store for this retailer."))
-		connection.execute("UPDATE products SET store_id = ? WHERE id = ? AND user_id = ?", (store_id or None, product_id, current_user_id()))
+		connection.execute("UPDATE products SET store_id = ? WHERE id = ?", (store_id or None, product_id))
 	return redirect(url_for("index", message="Store selection updated."))
 
 
@@ -1187,7 +1306,7 @@ def set_item_provider(product_id: int):
 		product = owned_product(connection, product_id)
 		if provider and (provider not in ITEM_PROVIDERS or provider not in providers_for_retailer(product["source"])):
 			return redirect(url_for("index", message=f"That API provider does not support {product['source']}."))
-		connection.execute("UPDATE products SET api_provider = ? WHERE id = ? AND user_id = ?", (provider or None, product_id, current_user_id()))
+		connection.execute("UPDATE products SET api_provider = ? WHERE id = ?", (provider or None, product_id))
 	message = f"This item will always use {provider}." if provider else "This item now follows the global API provider."
 	return redirect(url_for("index", message=message))
 
@@ -1214,18 +1333,23 @@ def add_store():
 	# Show Location pending until the search. 
 	location = location or "Location pending"
 	# Then once the search is run, check the search responce for the store name.
-	user_id = current_user_id()
 	with connect() as connection:
+		member_lists = shared_lists.lists_for_user(connection, current_user_id())
+		posted = request.form.get("list_id", "").strip()
+		chosen = [row["id"] for row in member_lists if not posted or str(row["id"]) == posted]
+		if len(chosen) != 1:
+			return redirect(url_for("index", message="Choose one of your lists for this store."))
+		list_id = chosen[0]
 		try:
 			connection.execute(
-				"INSERT INTO stores (user_id, retailer, store_id, name, location, zip_state, zipcode) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				(user_id, retailer, store_id, name, location, zip_state or None, zipcode or None),
+				"INSERT INTO stores (list_id, retailer, store_id, name, location, zip_state, zipcode) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				(list_id, retailer, store_id, name, location, zip_state or None, zipcode or None),
 			)
 		except sqlite3.IntegrityError:
 			if retailer == "Lowes":
 				connection.execute(
-					"UPDATE stores SET zip_state = ?, zipcode = ? WHERE user_id = ? AND retailer = ? AND store_id = ?",
-					(zip_state, zipcode, user_id, retailer, store_id),
+					"UPDATE stores SET zip_state = ?, zipcode = ? WHERE list_id = ? AND retailer = ? AND store_id = ?",
+					(zip_state, zipcode, list_id, retailer, store_id),
 				)
 				return redirect(url_for("index", message="Lowes store ZIP code/state updated."))
 			return redirect(url_for("index", message="That store is already saved for this retailer."))
@@ -1235,18 +1359,18 @@ def add_store():
 @app.post("/stores/<int:store_record_id>/remove")
 def remove_store(store_record_id: int):
 	"""Remove a saved store and reset products assigned to it to all stores."""
-	user_id = current_user_id()
 	with connect() as connection:
 		store = connection.execute(
-			"SELECT retailer, store_id FROM stores WHERE id = ? AND user_id = ?", (store_record_id, user_id)
+			f"SELECT list_id, retailer, store_id FROM stores WHERE id = ? AND list_id IN ({shared_lists.MEMBER_LISTS_SQL})",
+			(store_record_id, current_user_id()),
 		).fetchone()
 		if store is None:
 			abort(404, description="Saved store was not found.")
 		connection.execute(
-			"UPDATE products SET store_id = NULL WHERE user_id = ? AND source = ? AND store_id = ?",
-			(user_id, store["retailer"], store["store_id"]),
+			"UPDATE products SET store_id = NULL WHERE list_id = ? AND source = ? AND store_id = ?",
+			(store["list_id"], store["retailer"], store["store_id"]),
 		)
-		connection.execute("DELETE FROM stores WHERE id = ? AND user_id = ?", (store_record_id, user_id))
+		connection.execute("DELETE FROM stores WHERE id = ?", (store_record_id,))
 	return redirect(url_for("index", message="Saved store removed; assigned products now use all stores."))
 
 
@@ -1255,7 +1379,8 @@ def remove_url(product_id: int):
 	"""Endpoint to remove a product from the database based on product ID"""
 	with connect() as connection:
 		owned_product(connection, product_id)
-		connection.execute("DELETE FROM products WHERE id = ? AND user_id = ?", (product_id, current_user_id()))
+		require_watchlist_editor()
+		connection.execute("DELETE FROM products WHERE id = ?", (product_id,))
 	return redirect(url_for("index", message="URL removed."))
 
 
@@ -1299,7 +1424,7 @@ def recheck_selected():
 	try:
 		with connect() as connection:
 			products = connection.execute(
-				f"SELECT * FROM products WHERE user_id = ? AND id IN ({placeholders}) ORDER BY id", [user_id, *selected_ids]
+				f"SELECT * FROM products WHERE list_id IN ({shared_lists.MEMBER_LISTS_SQL}) AND id IN ({placeholders}) ORDER BY id", [user_id, *selected_ids]
 			).fetchall()
 
 		previous_fetch = 0.0
@@ -1393,8 +1518,14 @@ def export_watchlist_db():
 
 @app.post("/import")
 def import_watchlist():
-	"""Merge an uploaded SQLite/CSV/JSON watchlist into the current user's data. Nothing is replaced or deleted."""
+	"""Merge an uploaded SQLite/CSV/JSON watchlist into a list (admins choose which). Nothing is replaced or deleted."""
+	require_watchlist_editor()
 	user_id = current_user_id()
+	try:
+		with connect() as connection:
+			list_id = resolve_target_list(connection)
+	except ValueError as error:
+		return redirect(url_for("index", message=str(error)))
 	uploaded = request.files.get("database_file")
 
 	if uploaded is None or not uploaded.filename:
@@ -1415,7 +1546,7 @@ def import_watchlist():
 		else:
 			return redirect(url_for("index", message="Choose a .sqlite3, .sqlite, .db, .csv, or .json file."))
 		with connect() as connection:
-			result = merge_watchlist(connection, user_id, products, max_products=MAX_URLS, normalize_url=normalize_url)
+			result = merge_watchlist(connection, list_id, products, max_products=MAX_URLS, normalize_url=normalize_url, user_id=user_id)
 	except (ValueError, OSError) as error:
 		return redirect(url_for("index", message=f"Could not import: {error}"))
 

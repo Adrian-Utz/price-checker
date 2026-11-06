@@ -40,7 +40,10 @@ def run_scan(
 	#insert a new row into the scans table with the start time and status
 	with connect() as connection:
 		scan_id = connection.execute("INSERT INTO scans (user_id, started_at, status) VALUES (?, ?, ?)", (user_id, started, "running")).lastrowid
-		products = connection.execute("SELECT * FROM products WHERE user_id = ? ORDER BY id", (user_id,)).fetchall() #Retrieve this user's products
+		products = connection.execute(
+			"SELECT p.*, ? AS charge_user_id FROM products p WHERE p.list_id IN (SELECT list_id FROM list_members WHERE user_id = ?) ORDER BY p.id",
+			(user_id, user_id),
+		).fetchall() #Every item on the lists this user is assigned to; their API budget pays for the checks
 	previous_fetch = 0.0 #initialize a variable to track the time between fetches
 	finished = True
 
@@ -80,8 +83,8 @@ def refresh_product(
 		if product["source"] == "Lowes" and product["store_id"]:
 			with connect() as connection:
 				store = connection.execute(
-					"SELECT zip_state, zipcode FROM stores WHERE user_id = ? AND retailer = ? AND store_id = ?",
-					(product["user_id"], product["source"], product["store_id"]),
+					"SELECT zip_state, zipcode FROM stores WHERE list_id = ? AND retailer = ? AND store_id = ?",
+					(product["list_id"], product["source"], product["store_id"]),
 				).fetchone()
 			if store:
 				zip_state, zipcode = store["zip_state"], store["zipcode"]
@@ -100,8 +103,8 @@ def refresh_product(
 	with connect() as connection:
 		if product["store_id"] and (result.get("store_name") or result.get("store_location")):
 			connection.execute(
-				"UPDATE stores SET name = COALESCE(?, name), location = COALESCE(?, location) WHERE user_id = ? AND retailer = ? AND store_id = ? AND (name = ? OR location = ?)",
-				(result.get("store_name"), result.get("store_location"), product["user_id"], product["source"], product["store_id"], f"Store {product['store_id']}", "Location pending"),
+				"UPDATE stores SET name = COALESCE(?, name), location = COALESCE(?, location) 				WHERE list_id = ? AND retailer = ? AND store_id = ? AND (name = ? OR location = ?)",
+								(result.get("store_name"), result.get("store_location"), product["list_id"], product["source"], product["store_id"], f"Store {product['store_id']}", "Location pending"),
 			)
 		connection.execute("UPDATE products SET title = COALESCE(?, title), price = ?, bulk_price = ?, bulk_quantity = ?, currency = ?, checked_at = ?, error = ?, retailer_product_id = COALESCE(?, retailer_product_id) WHERE id = ?", (result.get("title"), result.get("price"), result.get("bulk_price"), result.get("bulk_quantity"), result.get("currency"), observed_at, error, result.get("product_id"), product["id"]))
 		connection.execute("INSERT INTO observations (product_id, price, bulk_price, currency, title, status, error, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (product["id"], result.get("price"), result.get("bulk_price"), result.get("currency"), result.get("title"), status, error, observed_at))

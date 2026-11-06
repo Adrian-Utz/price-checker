@@ -210,3 +210,6 @@ Things to know
 **What was Added**
 * Version bumped to 0.1.0.
 * The README was rewritten around the three modes, with sections for LAN, Docker, accounts, import and export, and the file layout.* Administrators in LAN and public modes now get the developer tools that developer mode gives in local mode: the API response lab and replay, Re-check on every product, no daily scan limit, and raw response recording (newest 1000 kept). Their calls skip the per-user API budget, server-wide cap and re-check limit but are still counted. Non-admins get a 404 for the lab.
+
+# [v0.1.1](https://github.com/Adrian-Utz/price-checker/releases/tag/0.1.1)
+- Removed importing and deleting features for regular users. Added better list management for administrators. Each user now show the lists they're on, or a "No list: sees no items" warning. To add a user select the dropdown that says "Add a User..." and select the desired user. Admins can add to any list but only see lists they're a member of. A new user sees nothing until an admin assigns them a list. Items and saved stores now belong to a list instead of a single user. Anyone on a list sees the same items and saved stores.  Added a list filter above the watchlist for anyone on more than one list. Pick All lists or a single list. It only offers lists you are on.

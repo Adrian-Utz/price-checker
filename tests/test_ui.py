@@ -87,4 +87,5 @@ def test_user_menu_links_depend_on_role(lan):
 	assert "Signed in as <strong>alice</strong>" in member
 	assert "/admin/users" not in member
 	assert "/admin/users" in admin
-	assert "/account" in member and "Sign out" in member
+	assert "/account" in member 
+	assert "Sign out" in member

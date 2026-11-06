@@ -82,6 +82,7 @@ There is also a systemd unit for running without Docker. See [docs/deployment.md
 
 - Sign in at `/login`. Sessions end after 120 minutes idle, and "Keep me signed in" lasts 30 days (`PRICE_CHECKER_REMEMBER_DAYS=0` turns it off).
 - Administrators open **Users** to create accounts, disable them, reset passwords, change roles and make invite links.
+- Administrators open **Lists** to create shared lists and choose which users see each one. Everyone on a list sees the same items, so a store or API change by one member shows for all of them. Only administrators add, import or remove items; each member's re-checks count against their own API limits.
 - `PRICE_CHECKER_REGISTRATION` is `admin` (default, no sign-up page), `invite` (single-use links) or `open`.
 - Passwords are 10 to 256 characters with no complexity rules. Five failed logins lock an account for 15 minutes, and each address is rate limited.
 - Command line: `python main.py create-admin [name]`, `python main.py reset-password [name]`, `python main.py backup [keep]`. In Docker, use `docker compose exec app python main.py ...`. For scripts, set `PRICE_CHECKER_ADMIN_PASSWORD` instead of typing the password.

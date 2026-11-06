@@ -946,3 +946,14 @@ th {
     .dev-response-layout { grid-template-columns: 1fr; }
     .dev-response-list { max-height: 30vh; }
 }
+.list-card h3 { margin: 0; }
+.list-head { align-items: baseline; display: flex; gap: 10px; }
+.list-members, .user-lists { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.list-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 14px; }
+.list-actions form { display: inline-flex; gap: 8px; }
+.chip { align-items: center; background: var(--surface-alt, transparent); border: 1px solid var(--border); border-radius: 999px; display: inline-flex; gap: 6px; padding: 2px 4px 2px 10px; }
+.chip-remove { background: none; border: 0; cursor: pointer; font-size: 1.1em; line-height: 1; padding: 2px 6px; }
+.user-lists .chip { padding: 2px 10px; }
+
+.list-filter { align-items: center; display: flex; gap: 8px; margin: 8px 0 12px; }
+.list-filter label { margin: 0; }
