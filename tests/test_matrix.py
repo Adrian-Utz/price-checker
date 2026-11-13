@@ -15,7 +15,7 @@ from utils.users import create_user
 
 PASSWORD = "cave johnsons correct horse battery"
 HOST = "prices.example.com"
-OPEN_ENDPOINTS = {"login", "register", "static", "healthz"}
+OPEN_ENDPOINTS = {"login", "register", "static", "healthz", "favicon"}
 
 
 @pytest.fixture(params=["lan", "public"])
@@ -103,6 +103,8 @@ def test_open_endpoints_work_without_login(hosted):
 	assert hosted().get("/healthz").status_code == 200
 	#Test the /login endpoint
 	assert hosted().get("/login").status_code == 200
+	# The browser can request the empty favicon without signing in.
+	assert hosted().get("/favicon.ico").status_code == 204
 
 
 def test_anonymous_requests_never_leak_watchlist_data(hosted):
