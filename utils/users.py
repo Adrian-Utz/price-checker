@@ -62,6 +62,26 @@ def create_user(connection: sqlite3.Connection, username: str, password: str, ro
 	return cursor.lastrowid
 
 
+def delete_user(connection: sqlite3.Connection, admin_id: int, user_id: int) -> str:
+	"""Delete an account (and, via ON DELETE CASCADE, its data) on behalf of an admin; returns the username."""
+	admin = get_user(connection, admin_id)
+	if admin is None or admin["role"] != "admin" or admin["disabled"]:
+		raise PermissionError("Only admins can delete users.")
+	if user_id == admin_id:
+		raise ValueError("You can't delete your own account.")
+	target = get_user(connection, user_id)
+	if target is None or target["username"] == LOCAL_USERNAME:
+		raise ValueError("That user doesn't exist.")
+	if target["role"] == "admin":
+		remaining = connection.execute(
+			"SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0 AND id != ?", (user_id,)
+		).fetchone()[0]
+		if remaining == 0:
+			raise ValueError("You can't delete the last admin.")
+	connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+	return target["username"]
+
+
 def get_user(connection: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
 	return connection.execute(
 		"SELECT id, username, role, disabled, session_version FROM users WHERE id = ?", (user_id,)
@@ -85,3 +105,4 @@ def claim_local_data(connection: sqlite3.Connection, user_id: int) -> None:
 	for table in ("products", "scans"):
 		connection.execute(f"UPDATE {table} SET user_id = ? WHERE user_id = ?", (user_id, local_id))
 	connection.execute("UPDATE OR IGNORE list_members SET user_id = ? WHERE user_id = ?", (user_id, local_id))
+	connection.execute("UPDATE scan_schedules SET created_by = ? WHERE created_by = ?", (user_id, local_id))

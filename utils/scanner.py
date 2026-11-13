@@ -44,13 +44,26 @@ def run_scan(
 			"SELECT p.*, ? AS charge_user_id FROM products p WHERE p.list_id IN (SELECT list_id FROM list_members WHERE user_id = ?) ORDER BY p.id",
 			(user_id, user_id),
 		).fetchall() #Every item on the lists this user is assigned to; their API budget pays for the checks
+	finished = scan_products(
+		products, force=developer_mode, cache_is_fresh=cache_is_fresh,
+		min_delay_seconds=min_delay_seconds, refresh_product=refresh_product,
+	)
+	with connect() as connection:
+		connection.execute("UPDATE scans SET completed_at = ?, status = ? WHERE id = ?", (utc_now().isoformat(), "completed" if finished else "stopped", scan_id))
+	return finished
+
+
+def scan_products(
+	products: list[sqlite3.Row], *, force: bool, cache_is_fresh: Callable[[str | None], bool],
+	min_delay_seconds: float, refresh_product: ProductRefresh,
+) -> bool:
 	previous_fetch = 0.0 #initialize a variable to track the time between fetches
 	finished = True
 
 	#Iterate over each product in the list
 	for product in products:
-		#Developer mode always re-fetches so every response gets recorded to the dev database.
-		if not developer_mode and product["price"] is not None and cache_is_fresh(product["checked_at"]): #Skip if product is not availiable or the cache is fresh
+		#Forced scans bypass the freshness cache.
+		if not force and product["price"] is not None and cache_is_fresh(product["checked_at"]): #Skip if product is not availiable or the cache is fresh
 			continue
 		#Wait to ensure a minimum delay between fetches to avoid overwhelming the server
 		time.sleep(max(0, min_delay_seconds + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
@@ -60,9 +73,6 @@ def run_scan(
 		except BudgetExceeded:
 			finished = False #Stop here; a 'stopped' scan doesn't use up the day's one completed scan
 			break
-	#Mark the scan as complete in the database
-	with connect() as connection:
-		connection.execute("UPDATE scans SET completed_at = ?, status = ? WHERE id = ?", (utc_now().isoformat(), "completed" if finished else "stopped", scan_id))
 	return finished
 
 

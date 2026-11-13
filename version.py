@@ -1,2 +1,2 @@
 #Here is the version Number to be called to other programs.
-VERSION_NUMBER = "0.1.1"
+VERSION_NUMBER = "0.1.2"

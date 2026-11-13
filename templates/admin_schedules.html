@@ -1,0 +1,79 @@
+{% extends "auth_base.html" %}
+{% block title %}Scan schedules - Price Checker{% endblock %}
+{% block header_links %}
+<nav class="user-bar">
+	<a href="{{ url_for('index') }}">Watchlist</a>
+	{% if accounts_enabled %}
+	<a href="{{ url_for('admin_users') }}">Users</a>
+	<a href="{{ url_for('admin_lists') }}">Lists</a>
+	<a href="{{ url_for('account') }}">Account</a>
+	{% endif %}
+</nav>
+{% endblock %}
+{% block content %}
+<section>
+	<h2>Scan schedules</h2>
+	<p class="help">Schedule individual lists in UTC. The app must be running at the scheduled time; missed runs are skipped. Monthly schedules run only in months containing the selected day.</p>
+	<p class="help">Normal scans respect the cache and the creator's configured per-user and server-wide daily API budgets. Force refresh bypasses both budgets and the cache and can spend API credits. Calls are still counted against the creator.</p>
+	<p class="help">Overlapping scans wait their turn. Runs are skipped if the creator is no longer an active administrator. Disabling or deleting a schedule cancels queued runs, but does not stop a scan already in progress.</p>
+</section>
+<section>
+	<h2>Create a schedule</h2>
+	<form method="post" action="{{ url_for('admin_create_schedule') }}">
+		<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+		<label for="schedule-list">List</label>
+		<select id="schedule-list" name="list_id" required>
+			<option value="">Choose a list</option>
+			{% for list in lists %}<option value="{{ list.id }}">{{ list.name }}</option>{% endfor %}
+		</select>
+		<label for="schedule-frequency">Frequency</label>
+		<select id="schedule-frequency" name="frequency">
+			<option value="daily">Daily</option>
+			<option value="weekly">Weekly</option>
+			<option value="monthly">Monthly</option>
+			<option value="once">Once</option>
+		</select>
+		<label for="schedule-start">First date and time (UTC)</label>
+		<input id="schedule-start" type="datetime-local" name="start_at" required>
+		<label><input type="checkbox" name="force" value="1"> Force refresh (bypass cache and API budgets)</label>
+		<button type="submit">Create schedule</button>
+	</form>
+</section>
+<section>
+	<h2>Existing schedules</h2>
+	{% for schedule in schedules %}
+	<div class="list-card">
+		<h3>{{ schedule.list_name }}</h3>
+		<p>{{ schedule.frequency | capitalize }} from {{ schedule.start_at | replace('T', ' ') }} UTC
+			&middot; {{ 'Force refresh' if schedule.force else 'Respect cache and budgets' }}
+			&middot; {{ 'Enabled' if schedule.enabled else 'Disabled' }} &middot; Created by {{ schedule.creator }}</p>
+		{% if schedule.last_occurrence %}
+		<p>Last run: {{ schedule.last_occurrence | replace('T', ' ') }} UTC &mdash; {{ schedule.last_status }}{% if schedule.last_detail %}: {{ schedule.last_detail }}{% endif %}</p>
+		{% endif %}
+		<form method="post" action="{{ url_for('admin_change_schedule', schedule_id=schedule.id, action='disable' if schedule.enabled else 'enable') }}">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			<button type="submit">{{ 'Disable' if schedule.enabled else 'Enable' }}</button>
+		</form>
+		<form method="post" action="{{ url_for('admin_change_schedule', schedule_id=schedule.id, action='delete') }}">
+			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+			<button type="submit" class="remove">Delete</button>
+		</form>
+	</div>
+	{% else %}
+	<p class="muted">No schedules yet.</p>
+	{% endfor %}
+</section>
+{% if auto_shutdown %}
+<script nonce="{{ csp_nonce }}">
+	let navigating = false;
+	document.addEventListener("click", function (event) {
+		if (event.target.closest("a[href]")) { navigating = true; }
+	});
+	document.addEventListener("submit", function () { navigating = true; });
+	window.addEventListener("pagehide", function (event) {
+		if (!event.persisted && !navigating) { navigator.sendBeacon("{{ url_for('shutdown') }}"); }
+	});
+	window.addEventListener("pageshow", function () { navigating = false; });
+</script>
+{% endif %}
+{% endblock %}

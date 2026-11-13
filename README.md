@@ -12,8 +12,8 @@ It runs three ways:
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 11/2/2026  
-**Latest Version:** 0.1.0
+**Last Update on:** 11/10/2026  
+**Latest Version:** 0.1.2
 
 ## Main Capabilities
 
@@ -83,6 +83,9 @@ There is also a systemd unit for running without Docker. See [docs/deployment.md
 - Sign in at `/login`. Sessions end after 120 minutes idle, and "Keep me signed in" lasts 30 days (`PRICE_CHECKER_REMEMBER_DAYS=0` turns it off).
 - Administrators open **Users** to create accounts, disable them, reset passwords, change roles and make invite links.
 - Administrators open **Lists** to create shared lists and choose which users see each one. Everyone on a list sees the same items, so a store or API change by one member shows for all of them. Only administrators add, import or remove items; each member's re-checks count against their own API limits.
+- Open **Schedules** to create, disable, enable, or delete multiple per-list scans (also available in local mode). Choose a future UTC start and a one-time, daily, weekly, or monthly recurrence; monthly runs skip months without that date. The app must be running at the scheduled minute: missed runs are not replayed. Local automatic tab-close shutdown stops the scheduler too.
+- Scheduled scans normally honor the cache and configured daily per-user and global API budgets, charged to the administrator who created the schedule. Force refresh bypasses both budgets and the cache but still counts calls; it can consume significant paid credits. Overlapping scans wait their turn. Runs are skipped if the creator is disabled or no longer an administrator. Deleting the creator or list deletes its schedules. The page shows the latest run status; check individual products for fetch errors. Disabling or deleting a schedule cancels queued runs but not running scans; queued work is lost if the server stops.
+- `PRICE_CHECKER_SCHEDULED_SCAN_HOUR` remains a separate legacy daily scan of enabled accounts; it can run alongside per-list schedules.
 - `PRICE_CHECKER_REGISTRATION` is `admin` (default, no sign-up page), `invite` (single-use links) or `open`.
 - Passwords are 10 to 256 characters with no complexity rules. Five failed logins lock an account for 15 minutes, and each address is rate limited.
 - Command line: `python main.py create-admin [name]`, `python main.py reset-password [name]`, `python main.py backup [keep]`. In Docker, use `docker compose exec app python main.py ...`. For scripts, set `PRICE_CHECKER_ADMIN_PASSWORD` instead of typing the password.

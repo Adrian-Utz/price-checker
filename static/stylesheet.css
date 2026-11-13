@@ -341,8 +341,33 @@ h1 {
 .provider-select {
     align-items: center;
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
     margin: 0;
+}
+
+.api-status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.quota-top {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 24px;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.quota-top h2 { margin: 0; }
+
+.quota-admin {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 20px;
 }
 
 .provider-label {
@@ -440,7 +465,11 @@ input[type=password], input[type=number] {
 
 .auth-page { max-width: 900px; }
 
-.auth-card { max-width: 440px; }
+.auth-card { 
+    max-width: 1000px;
+    display: grid;
+    place-items: center;
+}
 
 .auth-card form { flex-direction: column; }
 
@@ -478,6 +507,22 @@ input[type=password], input[type=number] {
 .user-bar form { display: inline-flex; }
 
 .user-bar button { padding: 6px 12px; }
+
+.user-bar a {
+    background: var(--accent);
+    color: var(--button-text-color);
+    font-weight: 700;
+    padding: 6px 12px;
+    text-decoration: none;
+}
+
+a.manage-button {
+    background: var(--accent);
+    color: var(--button-text-color);
+    font-weight: 700;
+    padding: 6px 12px;
+    text-decoration: none;
+}
 
 .user-row {
     align-items: center;

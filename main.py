@@ -28,6 +28,7 @@ import csv
 import io
 import math
 import os
+import queue
 import random
 import re
 import secrets
@@ -37,14 +38,14 @@ import threading
 import time
 import webbrowser
 from datetime import date, datetime, timedelta, timezone
+from contextlib import ExitStack
 from pathlib import Path
 from dotenv import load_dotenv
-from urllib.parse import unquote, urlparse, urlsplit
+from urllib.parse import urlparse, urlsplit
 from flask import Flask, Response, abort, g, has_request_context, redirect, render_template, request, send_file, session, url_for
 
 from version import VERSION_NUMBER
-from api_clients.serpapi_client import SerpApiClient, product_bulk_price as serpapi_bulk_price, product_candidates, product_price as serpapi_product_price
-from api_clients.unwrangle_client import product_bulk_price as unwrangle_bulk_price, product_price as unwrangle_product_price
+from api_clients.serpapi_client import SerpApiClient
 from utils.charting import chart_observations_in_range, format_observed_at_utc, price_chart
 import utils.check_for_update as check_for_update
 from utils.watchlist_io import (
@@ -66,15 +67,19 @@ from utils.database import (
 	init_dev_db,
 )
 from utils.config import ConfigError, create_secret_file, load_settings, startup_errors
+from utils.dev_responses import replay_dev_response
 from utils.migrations import LOCAL_USERNAME, UNUSABLE_PASSWORD_HASH
+from utils.product_utils import ensure_success_status, normalize_url, parse_price, product_query
 from utils.serving import ensure_tls_files, serve, start_scheduler
-from utils.users import claim_local_data, create_user, get_user, local_user_id, real_user_count
+from utils.users import claim_local_data, create_user, delete_user, get_user, local_user_id, real_user_count
 from utils import auth
 from utils import lists as shared_lists
+from utils import schedules
 from utils.limits import BudgetExceeded, calls_today, reserve_api_call
 from utils.scanner import (
 	refresh_product as _refresh_product,
 	run_scan as _run_scan,
+	scan_products,
 	scan_allowed as _scan_allowed,
 )
 from utils.providers import (
@@ -137,6 +142,9 @@ update_info_lock = threading.Lock()
 api_usage_lock = threading.Lock()
 user_scan_locks: dict[int, threading.Lock] = {}
 user_scan_locks_guard = threading.Lock()
+list_schedule_locks: dict[int, threading.RLock] = {}
+list_schedule_locks_guard = threading.Lock()
+scheduled_list_queue: queue.Queue[tuple[sqlite3.Row, str]] = queue.Queue()
 api_usage = {
 	"serpapi_remaining": None,
 	"serpapi_monthly_limit": None,
@@ -198,66 +206,6 @@ def record_dev_api_responses(url: str, provider: str, responses: list[dict[str, 
 			connection.execute("DELETE FROM api_responses WHERE id NOT IN (SELECT id FROM api_responses ORDER BY id DESC LIMIT ?)", (DEV_RESPONSE_KEEP,))
 
 
-def _find_json_field(value: object, field_names: tuple[str, ...], path: str = "$") -> tuple[str | None, object]:
-	"""Locate the requested json value. Used in the dev responce replayer."""
-	if isinstance(value, dict):
-		for name in field_names:
-			if name in value and value[name] is not None:
-				return f"{path}.{name}", value[name]
-		for key, nested in value.items():
-			found_path, found_value = _find_json_field(nested, field_names, f"{path}.{key}")
-			if found_path:
-				return found_path, found_value
-	elif isinstance(value, list):
-		for index, nested in enumerate(value):
-			found_path, found_value = _find_json_field(nested, field_names, f"{path}[{index}]")
-			if found_path:
-				return found_path, found_value
-	return None, None
-
-
-def replay_dev_response(provider: str, url: str, payload: dict[str, object]) -> dict[str, object]:
-	"""Show the user what is being pulled from the raw JSON"""
-	if provider == "SerpApiClient":
-		candidates = product_candidates(payload)
-		candidate = next((item for item in candidates if serpapi_product_price(item) is not None), {})
-		price = serpapi_product_price(candidate)
-		bulk = serpapi_bulk_price(candidate, price) if price is not None else None
-		title = candidate.get("title") or product_query(url)
-		currency = candidate.get("currency") or "USD"
-		debug_source = candidate
-	else:
-		detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else payload
-		price = unwrangle_product_price(detail)
-		if price is None:
-			price = unwrangle_product_price(payload)
-		if price is None:
-			price = unwrangle_product_price(detail.get("list_price"))
-		if price is None:
-			price = unwrangle_product_price(payload.get("list_price"))
-		bulk = unwrangle_bulk_price(detail, price) or unwrangle_bulk_price(payload, price)
-		title = detail.get("name") or detail.get("title") or product_query(url)
-		currency = detail.get("currency") or payload.get("currency") or "USD"
-		debug_source = payload
-	bulk_price, bulk_quantity = bulk if bulk else (None, None)
-	price_path, raw_price = _find_json_field(debug_source, ("price", "current_price", "sale_price", "final_price"))
-	if raw_price is None:
-		price_path, raw_price = _find_json_field(debug_source, ("list_price", "listing_price", "original_price"))
-	bulk_price_path, raw_bulk_price = _find_json_field(debug_source, ("bulk_price", "volume_price"))
-	quantity_path, raw_quantity = _find_json_field(debug_source, ("bulk_price_threshold", "bulk_price_quantity", "minimum_order_quantity", "quantity"))
-	return {
-		"product": {"title": title, "price": price, "currency": currency, "bulk_price": bulk_price, "bulk_quantity": bulk_quantity},
-		"fields": {
-			"title": {"path": _find_json_field(debug_source, ("name", "title"))[0], "value": title},
-			"price": {"path": price_path, "raw": raw_price, "parsed": price},
-			"currency": {"path": _find_json_field(debug_source, ("currency",))[0], "value": currency},
-			"bulk_price": {"path": bulk_price_path, "raw": raw_bulk_price, "parsed": bulk_price},
-			"bulk_quantity": {"path": quantity_path, "raw": raw_quantity, "parsed": bulk_quantity},
-		},
-		"error": "No regular price could be extracted from this response." if price is None else None,
-	}
-
-
 def utc_now() -> datetime:
 	"""Time check"""
 	return datetime.now(timezone.utc)
@@ -266,47 +214,6 @@ def utc_now() -> datetime:
 def local_calendar_date(timestamp: str):
 	"""Time Stamp"""
 	return datetime.fromisoformat(timestamp).astimezone().date()
-
-
-def normalize_url(value: str) -> str:
-	"""
-	## Check and normilize the URL
-	This function takes a string input and checks if it is a complete HTTP or HTTPS URL,
-	and returns a normalized version of the URL without any fragment identifiers.
-	"""
-	parsed = urlparse(value.strip())
-	if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-		raise ValueError("Enter a complete http or https URL.")
-	return parsed._replace(fragment="").geturl()
-
-
-def parse_price(text: str) -> float | None:
-	"""Use regex to find all occurrences of dollar or USD followed by digits, optional commas and decimal points"""
-	matches = re.findall(r"(?:\$|USD\s*)(\d{1,5}(?:,\d{3})?(?:\.\d{2})?)", text, re.IGNORECASE)
-	#Convert each match to a float.
-	values = [float(match.replace(",", "")) for match in matches]
-	return min(values) if values else None
-
-
-def ensure_success_status(status: int | None) -> None:
-	#Check if the status code exists and is >= 400.
-	if status is not None and status >= 400:
-		raise RuntimeError(f"The retailer returned HTTP {status}; no product page was available.")
-
-
-def product_query(url: str) -> str:
-	#Split the URL into parts, unquote them, then filter out any empty strings
-	path_parts = [unquote(part) for part in urlparse(url).path.split("/") if part]
-	#If forst part is "pd" remove from list
-	if path_parts and path_parts[0].lower() == "pd":
-		path_parts = path_parts[1:]
-	#Remove any trailing numeric parts from the end of the path
-	if path_parts and re.fullmatch(r"\d+", path_parts[-1]):
-		path_parts.pop()
-	#Extract the product name by replacing hyphens, underscores, and spaces with a space
-	name = re.sub(r"[-_]+", " ", path_parts[-1] if path_parts else "")
-	#remove any extra whitespace, strip leading/trailing spaces from name
-	return re.sub(r"\s+", " ", name).strip()
 
 
 def fetch_product(
@@ -582,7 +489,12 @@ def protect_post_forms() -> None:
 		abort(400, description="Invalid form token.")
 
 
-PUBLIC_ENDPOINTS = {"login", "register", "static", "healthz"}
+PUBLIC_ENDPOINTS = {"login", "register", "static", "healthz", "favicon"}
+
+
+@app.get("/favicon.ico")
+def favicon():
+	return "", 204
 
 
 @app.get("/healthz")
@@ -636,18 +548,23 @@ def schedule_shutdown() -> None:
 
 
 def run_scan(user_id: int) -> bool:
-	return _run_scan(
-		user_id=user_id,
-		connect=connect,
-		utc_now=utc_now,
-		developer_mode=user_has_dev_access(user_id),
-		cache_is_fresh=cache_is_fresh,
-		min_delay_seconds=MIN_DELAY_SECONDS,
-		refresh_product=refresh_product,
-	)
+	with connect() as connection:
+		list_ids = [row["list_id"] for row in connection.execute("SELECT list_id FROM list_members WHERE user_id = ? ORDER BY list_id", (user_id,))]
+	with ExitStack() as stack:
+		for list_id in list_ids:
+			stack.enter_context(list_scan_lock_for(list_id))
+		return _run_scan(
+			user_id=user_id,
+			connect=connect,
+			utc_now=utc_now,
+			developer_mode=user_has_dev_access(user_id),
+			cache_is_fresh=cache_is_fresh,
+			min_delay_seconds=MIN_DELAY_SECONDS,
+			refresh_product=refresh_product,
+		)
 
 
-def refresh_product(product: sqlite3.Row) -> None:
+def refresh_product(product: sqlite3.Row, *, scheduled_force: bool | None = None) -> None:
 	# Reserve the credit before fetching: a failed fetch would otherwise overwrite the stored price with an error.
 	# Administrators' calls are still counted, but never refused (a limit of 0 means unlimited).
 	# A scan carries the user who started it; anything else (a re-check) is paid for by the signed-in user.
@@ -658,7 +575,7 @@ def refresh_product(product: sqlite3.Row) -> None:
 		payer = current_user_id()
 	else:
 		payer = product["user_id"]
-	unlimited = user_has_dev_access(payer)
+	unlimited = user_has_dev_access(payer) if scheduled_force is None else scheduled_force
 	with connect() as connection:
 		reserve_api_call(
 			connection, payer,
@@ -686,6 +603,11 @@ def scan_lock_for(user_id: int) -> threading.Lock:
 	"""One lock per user: a user can't run two scans (and spend API credits twice) at once, but users don't block each other."""
 	with user_scan_locks_guard:
 		return user_scan_locks.setdefault(user_id, threading.Lock())
+
+
+def list_scan_lock_for(list_id: int) -> threading.RLock:
+	with list_schedule_locks_guard:
+		return list_schedule_locks.setdefault(list_id, threading.RLock())
 
 
 def session_expired() -> bool:
@@ -1003,8 +925,15 @@ def admin_reset_password(user_id: int):
 	)
 
 
+@app.post("/admin/users/<int:user_id>/delete")
+def admin_delete_user(user_id: int):
+	"""Delete a user"""
+	return admin_action(lambda connection: delete_user(connection, current_user_id(), user_id), "Account deleted.")
+
+
 @app.post("/admin/invites/create")
 def admin_create_invite():
+	"""Create an invite link"""
 	require_accounts()
 	require_admin()
 	if SETTINGS.registration != "invite":
@@ -1020,10 +949,12 @@ def admin_create_invite():
 
 @app.post("/admin/invites/<int:invite_id>/revoke")
 def admin_revoke_invite(invite_id: int):
+	"""Revoke an invite link"""
 	return admin_action(lambda connection: auth.revoke_invite(connection, invite_id), "Invite revoked.")
 
 
 def render_admin_lists(message: str | None = None, error: str | None = None, status: int = 200):
+	"""Render the admin_lists page for list manipulation"""
 	with connect() as connection:
 		lists = shared_lists.all_lists(connection)
 		users = auth.list_users(connection)
@@ -1051,6 +982,7 @@ def list_action(action, success_message: str):
 
 @app.get("/admin/lists")
 def admin_lists():
+	"""Block non-admins from reaching the list manipulation page"""
 	require_accounts()
 	require_admin()
 	return render_admin_lists(message=request.args.get("message"))
@@ -1058,11 +990,13 @@ def admin_lists():
 
 @app.post("/admin/lists/create")
 def admin_create_list():
+	"""Create a new list"""
 	return list_action(lambda connection: shared_lists.create_list(connection, request.form.get("name", "")), "List created.")
 
 
 @app.post("/admin/lists/<int:list_id>/delete")
 def admin_delete_list(list_id: int):
+	"""Delete a list """
 	return list_action(lambda connection: shared_lists.delete_list(connection, list_id), "List deleted.")
 
 
@@ -1076,7 +1010,74 @@ def admin_add_list_member(list_id: int):
 
 @app.post("/admin/lists/<int:list_id>/members/<int:user_id>/remove")
 def admin_remove_list_member(list_id: int, user_id: int):
+	"""Remove a member from a list"""
 	return list_action(lambda connection: shared_lists.remove_member(connection, list_id, user_id), "User removed from the list.")
+
+
+def render_schedules(message: str | None = None, error: str | None = None, status: int = 200):
+	"""Render the schedules page"""
+	with connect() as connection:
+		lists = connection.execute("SELECT id, name FROM lists ORDER BY name COLLATE NOCASE").fetchall()
+		entries = connection.execute("""
+			SELECT s.*, l.name AS list_name, u.username AS creator
+			FROM scan_schedules s JOIN lists l ON l.id = s.list_id
+			JOIN users u ON u.id = s.created_by ORDER BY l.name COLLATE NOCASE, s.start_at, s.id
+		""").fetchall()
+	return render_template(
+		"admin_schedules.html", csrf_token=session["csrf_token"], lists=lists,
+		schedules=entries, message=message, error=error, accounts_enabled=not SETTINGS.is_local,
+	), status
+
+
+@app.get("/admin/schedules")
+def admin_schedules():
+	"""Redirect to the schedules page only if admin"""
+	require_admin()
+	return render_schedules(message=request.args.get("message"))
+
+
+@app.post("/admin/schedules/create")
+def admin_create_schedule():
+	"""Create a scheduled time to run a complete scan of the database"""
+	require_admin()
+	try:
+		frequency, start_at = schedules.parse_schedule(request.form.get("frequency", ""), request.form.get("start_at", ""), utc_now())
+		list_id = request.form.get("list_id", "")
+		if not list_id.isdigit():
+			raise ValueError("Choose a valid list.")
+		with connect() as connection:
+			if not connection.execute("SELECT 1 FROM lists WHERE id = ?", (int(list_id),)).fetchone():
+				raise ValueError("Choose a valid list.")
+			connection.execute(
+				"INSERT INTO scan_schedules (list_id, created_by, start_at, frequency, force) VALUES (?, ?, ?, ?, ?)",
+				(int(list_id), current_user_id(), start_at, frequency, int(request.form.get("force") == "1")),
+			)
+	except ValueError as error:
+		return render_schedules(error=str(error), status=400)
+	return redirect(url_for("admin_schedules", message="Schedule created."))
+
+
+@app.post("/admin/schedules/<int:schedule_id>/<action>")
+def admin_change_schedule(schedule_id: int, action: str):
+	"""Edit a scheduled database scan and change its parameters"""
+	require_admin()
+	if action not in {"enable", "disable", "delete"}:
+		abort(404)
+	with connect() as connection:
+		if action == "delete":
+			result = connection.execute("DELETE FROM scan_schedules WHERE id = ?", (schedule_id,))
+		elif action == "disable":
+			result = connection.execute(
+				"""UPDATE scan_schedules SET enabled = 0, generation = generation + 1,
+				last_status = CASE WHEN last_status = 'queued' THEN 'cancelled' ELSE last_status END,
+				last_detail = CASE WHEN last_status = 'queued' THEN 'Schedule disabled.' ELSE last_detail END
+				WHERE id = ?""", (schedule_id,),
+			)
+		else:
+			result = connection.execute("UPDATE scan_schedules SET enabled = 1 WHERE id = ?", (schedule_id,))
+		if result.rowcount == 0:
+			abort(404)
+	return redirect(url_for("admin_schedules", message="Schedule updated."))
 
 
 @app.route("/", methods=["GET"])
@@ -1397,7 +1398,8 @@ def recheck_url(product_id: int):
 	if limited:
 		return limited
 	try:
-		refresh_product(product)
+		with list_scan_lock_for(product["list_id"]):
+			refresh_product(product)
 	except BudgetExceeded as error:
 		return redirect(url_for("index", message=str(error)))
 
@@ -1431,17 +1433,20 @@ def recheck_selected():
 		checked = 0
 		budget_message = None
 
-		for product in products:
-			#Keep the same pacing as a full scan so a large selection doesn't hammer the APIs
-			if previous_fetch:
-				time.sleep(max(0, MIN_DELAY_SECONDS + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
-			previous_fetch = time.monotonic()
-			try:
-				refresh_product(product)
-			except BudgetExceeded as error:
-				budget_message = str(error)
-				break
-			checked += 1
+		with ExitStack() as stack:
+			for list_id in sorted({product["list_id"] for product in products}):
+				stack.enter_context(list_scan_lock_for(list_id))
+			for product in products:
+				#Keep the same pacing as a full scan so a large selection doesn't hammer the APIs
+				if previous_fetch:
+					time.sleep(max(0, MIN_DELAY_SECONDS + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
+				previous_fetch = time.monotonic()
+				try:
+					refresh_product(product)
+				except BudgetExceeded as error:
+					budget_message = str(error)
+					break
+				checked += 1
 	finally:
 		lock.release()
 	message = f"Re-checked {checked} selected item{'s' if checked != 1 else ''}."
@@ -1699,10 +1704,97 @@ def run_scheduled_scans() -> None:
 			lock.release()
 
 
+def run_list_schedule(schedule: sqlite3.Row, occurrence: str) -> None:
+	status, detail = "skipped", None
+	try:
+		with scan_lock_for(schedule["created_by"]), list_scan_lock_for(schedule["list_id"]):
+			with connect() as connection:
+				active = connection.execute(
+					"SELECT 1 FROM scan_schedules WHERE id = ? AND enabled = 1 AND list_id = ? AND created_by = ? AND generation = ?",
+					(schedule["id"], schedule["list_id"], schedule["created_by"], schedule["generation"]),
+				).fetchone()
+				if not active:
+					return
+				connection.execute(
+					"UPDATE scan_schedules SET last_status = 'running' WHERE id = ? AND last_occurrence = ?",
+					(schedule["id"], occurrence),
+				)
+				creator = connection.execute("SELECT role, disabled FROM users WHERE id = ?", (schedule["created_by"],)).fetchone()
+				products = connection.execute(
+					"SELECT p.*, ? AS charge_user_id FROM products p WHERE p.list_id = ? ORDER BY p.id",
+					(schedule["created_by"], schedule["list_id"]),
+				).fetchall()
+			if creator is None or creator["disabled"] or creator["role"] != "admin":
+				detail = "The schedule creator is no longer an active administrator."
+			elif not provider_ready("auto"):
+				detail = "No API provider is set up."
+			else:
+				finished = scan_products(
+					products, force=bool(schedule["force"]), cache_is_fresh=cache_is_fresh,
+					min_delay_seconds=MIN_DELAY_SECONDS,
+					refresh_product=lambda product: refresh_product(product, scheduled_force=bool(schedule["force"])),
+				)
+				status = "completed" if finished else "stopped"
+				detail = "Scan processed; check individual products for fetch errors." if finished else "Daily API budget exhausted."
+	except Exception as error:
+		status, detail = "failed", str(error)
+		print(f"Scheduled list scan {schedule['id']} failed: {error}")
+	with connect() as connection:
+		connection.execute(
+			"UPDATE scan_schedules SET last_status = ?, last_detail = ? WHERE id = ? AND last_occurrence = ?",
+			(status, detail, schedule["id"], occurrence),
+		)
+
+
+def dispatch_list_schedules(now: datetime) -> None:
+	"""Claim only the current UTC minute; missed occurrences are never replayed."""
+	occurrence = now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+	with connect() as connection:
+		entries = connection.execute("SELECT * FROM scan_schedules WHERE enabled = 1").fetchall()
+	for entry in entries:
+		if not schedules.due(entry, now):
+			continue
+		with connect() as connection:
+			result = connection.execute(
+				"""UPDATE scan_schedules SET last_occurrence = ?, last_status = 'queued', last_detail = NULL
+				WHERE id = ? AND enabled = 1 AND generation = ? AND (last_occurrence IS NULL OR last_occurrence < ?)""",
+				(occurrence, entry["id"], entry["generation"], occurrence),
+			)
+		if result.rowcount:
+			scheduled_list_queue.put((entry, occurrence))
+
+
+def start_list_scheduler() -> None:
+	with connect() as connection:
+		connection.execute("UPDATE scan_schedules SET last_status = 'interrupted', last_detail = 'The server stopped before this scan finished.' WHERE last_status IN ('running', 'queued')")
+
+	def worker() -> None:
+		while True:
+			entry, occurrence = scheduled_list_queue.get()
+			try:
+				run_list_schedule(entry, occurrence)
+			except Exception as error:
+				print(f"Scheduled list scan {entry['id']} could not update its status: {error}")
+			finally:
+				scheduled_list_queue.task_done()
+
+	def loop() -> None:
+		while True:
+			try:
+				dispatch_list_schedules(utc_now())
+			except Exception as error:
+				print(f"Schedule dispatch failed: {error}")
+			time.sleep(1)
+
+	threading.Thread(target=worker, daemon=True, name="list-scan-worker").start()
+	threading.Thread(target=loop, daemon=True, name="list-scheduler").start()
+
+
 def start_background_tasks() -> None:
 	"""Update check, the optional scheduled scan and (local mode) the browser. Started once in the serving process."""
 	threading.Thread(target=check_for_update_background, daemon=True).start()
 	start_scheduler(SETTINGS.scheduled_scan_hour, run_scheduled_scans)
+	start_list_scheduler()
 	if SETTINGS.open_browser:
 		open_app_browser(SETTINGS.host, SETTINGS.port)
 

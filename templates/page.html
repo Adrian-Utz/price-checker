@@ -31,16 +31,6 @@ Written by: AJ Utz
 			{% else %}
 			<p class="lede">A quiet, once-a-day watchlist for prices that matter.</p>
 			{% endif %}
-			{% if is_admin %}
-			<form class="provider-select" method="post" action="{{ url_for('set_api_provider') }}">
-				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-				<span class="provider-label">Global API provider</span>
-				<button class="provider-button {{ 'active' if api_provider == 'auto' }}" name="provider" value="auto" title="Pick the best provider per retailer">Auto</button>
-				<button class="provider-button {{ 'active' if api_provider == 'serpapi' }}" name="provider" value="serpapi" title="Always use SerpApi">SerpApi</button>
-				<button class="provider-button {{ 'active' if api_provider == 'unwrangle' }}" name="provider" value="unwrangle" title="Always use Unwrangle">Unwrangle</button>
-				<button class="provider-button {{ 'active' if api_provider == 'apify' }}" name="provider" value="apify" title="Always use Apify (Lowes only)">Apify</button>
-			</form>
-			{% endif %}
 			{% if developer_mode %}<a class="dev-tools-link" href="{{ url_for('dev_responses') }}">API response lab</a>{% endif %}
 		</div>
 			<div class="header-tools">
@@ -76,7 +66,7 @@ Written by: AJ Utz
 				{% if accounts_enabled %}
 				<span class="user-bar">
 					<span class="muted">Signed in as <strong>{{ current_username }}</strong></span>
-					{% if is_admin %}<a href="{{ url_for('admin_users') }}">Users</a> <a href="{{ url_for('admin_lists') }}">Lists</a>{% endif %}
+					{% if is_admin %}<a href="{{ url_for('admin_users') }}">Users</a> <a href="{{ url_for('admin_lists') }}">Lists</a> <a href="{{ url_for('admin_schedules') }}">Schedules</a>{% endif %}
 					<a href="{{ url_for('account') }}">Account</a>
 					<form method="post" action="{{ url_for('logout') }}">
 						<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -84,27 +74,16 @@ Written by: AJ Utz
 					</form>
 				</span>
 				{% endif %}
+				{% if not accounts_enabled and is_admin %}<a href="{{ url_for('admin_schedules') }}" id="local-schedules-link">Schedules</a>{% endif %}
 				<!--Env editor button-->
 				{% if edit_env %}
 				<button class="env-button" type="button" data-open-dialog="env-editor">Edit .env</button>
-				{% endif %}
-				<!--Alerts if the user has configured their Api keys-->
-				{% if is_admin %}
-				<span class="status {{ '' if serpapi_ready else 'warning' }}">
-					SerpApi {{ 'ready' if serpapi_ready else 'API key needed' }}
-				</span>
-				<span class="status {{ '' if unwrangle_ready else 'warning' }}">
-					Unwrangle {{ 'ready' if unwrangle_ready else 'API key needed' }}
-				</span>
-				<span class="status {{ '' if apify_ready else 'warning' }}">
-					Apify {{ 'ready' if apify_ready else 'API token needed' }}
-				</span>
 				{% endif %}
 			</div>
 			</div>
 	</header>
 	{% include '_banner.html' %}
-	{% if accounts_enabled %}{% include '_quota.html' %}{% endif %}
+	{% include '_quota.html' %}
 		{% if edit_env %}
 		<dialog class="history-modal" id="env-editor">
 			<!--Editor popup for .env file, Allows the user to change their API key on the fly.-->
@@ -412,9 +391,11 @@ Written by: AJ Utz
 </body></html>
 {% if auto_shutdown %}
 <script nonce="{{ csp_nonce }}">
+	let openingSchedules = false;
+	document.getElementById("local-schedules-link")?.addEventListener("click", function () { openingSchedules = true; });
 	//Local mode server shutdown request when user closes page
     window.addEventListener("pagehide", function (event) {
-        if (!event.persisted) {
+        if (!event.persisted && !openingSchedules) {
             navigator.sendBeacon("{{ url_for('shutdown') }}");
         }
     });

@@ -545,6 +545,14 @@ def test_stylesheet_is_served_from_flask_static_route():
     assert b"font-family" in response.data
 
 
+def test_favicon_request_returns_no_content():
+    from main import app
+
+    response = app.test_client().get("/favicon.ico")
+    assert response.status_code == 204
+    assert response.data == b""
+
+
 def test_home_page_displays_version_number():
     """Verify that home page displays the current application version number."""
     from main import VERSION_NUMBER, app

@@ -213,3 +213,6 @@ Things to know
 
 # [v0.1.1](https://github.com/Adrian-Utz/price-checker/releases/tag/0.1.1)
 - Removed importing and deleting features for regular users. Added better list management for administrators. Each user now show the lists they're on, or a "No list: sees no items" warning. To add a user select the dropdown that says "Add a User..." and select the desired user. Admins can add to any list but only see lists they're a member of. A new user sees nothing until an admin assigns them a list. Items and saved stores now belong to a list instead of a single user. Anyone on a list sees the same items and saved stores.  Added a list filter above the watchlist for anyone on more than one list. Pick All lists or a single list. It only offers lists you are on.
+
+# [v0.1.2](https://github.com/Adrian-Utz/price-checker/releases/tag/0.1.2)
+- Added a scheduling function and page. Allows admins to set a date and time to run a check. If the date passed and the server was down or offline, the check is skipped. 

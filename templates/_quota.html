@@ -5,8 +5,35 @@ Last Update: 11/2/2026
 Written on: 10/23/2026
 Written by: AJ Utz
 -->
-<section class="quota-panel" aria-label="Your usage limits">
-	<h2>Your limits</h2>
+{% if accounts_enabled or is_admin %}
+<section class="quota-panel" aria-label="Usage limits and API status">
+	<div class="quota-top">
+		{% if accounts_enabled %}<h2>Your limits</h2>{% endif %}
+		{% if is_admin %}
+		<div class="quota-admin">
+			<form class="provider-select" method="post" action="{{ url_for('set_api_provider') }}">
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				<span class="provider-label">Global API provider</span>
+				<button class="provider-button {{ 'active' if api_provider == 'auto' }}" name="provider" value="auto" title="Pick the best provider per retailer">Auto</button>
+				<button class="provider-button {{ 'active' if api_provider == 'serpapi' }}" name="provider" value="serpapi" title="Always use SerpApi">SerpApi</button>
+				<button class="provider-button {{ 'active' if api_provider == 'unwrangle' }}" name="provider" value="unwrangle" title="Always use Unwrangle">Unwrangle</button>
+				<button class="provider-button {{ 'active' if api_provider == 'apify' }}" name="provider" value="apify" title="Always use Apify (Lowes only)">Apify</button>
+			</form>
+			<div class="api-status">
+				<span class="status {{ '' if serpapi_ready else 'warning' }}">
+					SerpApi {{ 'ready' if serpapi_ready else 'API key needed' }}
+				</span>
+				<span class="status {{ '' if unwrangle_ready else 'warning' }}">
+					Unwrangle {{ 'ready' if unwrangle_ready else 'API key needed' }}
+				</span>
+				<span class="status {{ '' if apify_ready else 'warning' }}">
+					Apify {{ 'ready' if apify_ready else 'API token needed' }}
+				</span>
+			</div>
+		</div>
+		{% endif %}
+	</div>
+	{% if accounts_enabled %}
 	<div class="quota-grid">
 		{% macro meter(label, item, note) %}
 		<div class="quota-item">
@@ -20,4 +47,6 @@ Written by: AJ Utz
 		{% if quota.api %}{{ meter('API calls today', quota.api, 'Resets at midnight UTC.') }}{% endif %}
 		{% if quota.rechecks %}{{ meter('Re-checks this hour', quota.rechecks, '') }}{% endif %}
 	</div>
+	{% endif %}
 </section>
+{% endif %}

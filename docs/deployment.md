@@ -42,7 +42,7 @@ Then open `https://your-domain`. Caddy obtains and renews the certificate automa
 
 ### Limits and the scheduler
 
-`PRICE_CHECKER_USER_DAILY_API_CALLS` (default 150) and `PRICE_CHECKER_GLOBAL_DAILY_API_CALLS` (default unlimited) cap paid API use. `PRICE_CHECKER_SCHEDULED_SCAN_HOUR=4` scans every account daily at 04:00 UTC. The image runs one gunicorn worker with several threads on purpose, so the scheduler and scan locks work. Don't raise the worker count.
+`PRICE_CHECKER_USER_DAILY_API_CALLS` (default 150) and `PRICE_CHECKER_GLOBAL_DAILY_API_CALLS` (default unlimited) cap paid API use. Administrators can configure per-list schedules on the **Schedules** page, including a force-refresh option that bypasses these budgets. Schedules use UTC, need the app to be running at the scheduled minute, and do not replay missed or interrupted runs after restart. `PRICE_CHECKER_SCHEDULED_SCAN_HOUR=4` is a separate legacy schedule that scans every account daily at 04:00 UTC. The image runs one gunicorn worker with several threads on purpose, so the scheduler and scan locks work. Don't raise the worker count.
 
 ---
 
@@ -109,6 +109,8 @@ PRICE_CHECKER_ALLOWED_HOSTS=192.168.1.20,nas.home.arpa   # optional but recommen
 
 ### Firewall (ufw)
 
+Before changing the firewall, note the current policies and rules with `sudo ufw status verbose` so you can restore any settings that were already in place.
+
 Allow only your LAN to reach the port (adjust the subnet and port):
 
 ```bash
@@ -118,12 +120,28 @@ sudo ufw allow from 192.168.1.0/24 to any port 5000 proto tcp
 sudo ufw enable
 ```
 
+To undo the LAN rules, remove only rules that this setup added. Restore the incoming default policy to the value recorded before setup; for example, if it was `allow`:
+
+```bash
+sudo ufw delete allow from 192.168.1.0/24 to any port 5000 proto tcp
+sudo ufw delete allow OpenSSH
+sudo ufw default allow incoming
+```
+
 For the public setup, allow 80 and 443 only:
 
 ```bash
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 sudo ufw allow 443/udp
+```
+
+To remove those public allow rules later:
+
+```bash
+sudo ufw delete allow 80/tcp
+sudo ufw delete allow 443/tcp
+sudo ufw delete allow 443/udp
 ```
 
 > **Docker bypasses ufw for published ports.** Docker adds its own iptables rules, so a port in `ports:` is open to the world even if ufw denies it. That is why the compose file publishes only Caddy's 80/443 and keeps the app on the internal network. Never add `ports: - "5000:5000"` to the app.

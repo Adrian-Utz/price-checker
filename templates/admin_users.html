@@ -12,6 +12,7 @@ Written by: AJ Utz
 <nav class="user-bar">
 	<a href="{{ url_for('index') }}">Watchlist</a>
 	<a href="{{ url_for('admin_lists') }}">Lists</a>
+	<a href="{{ url_for('admin_schedules') }}">Schedules</a>
 	<a href="{{ url_for('account') }}">Account</a>
 </nav>
 {% endblock %}
@@ -40,7 +41,7 @@ Written by: AJ Utz
 				{% else %}
 				<span class="status warning">No list: sees no items</span>
 				{% endif %}
-				<a href="{{ url_for('admin_lists') }}">Manage</a>
+				<a href="{{ url_for('admin_lists') }}" class="manage-button">Manage</a>
 			</div>
 		</div>
 		<div class="user-actions">
@@ -56,6 +57,10 @@ Written by: AJ Utz
 			<form method="post" action="{{ url_for('admin_set_status', user_id=user.id) }}">
 				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 				<button type="submit" name="action" value="{{ 'enable' if user.disabled else 'disable' }}">{{ 'Enable' if user.disabled else 'Disable' }}</button>
+			</form>
+			<form method="post" action="{{ url_for('admin_delete_user', user_id=user.id) }}" data-confirm="Delete {{ user.username }} and all of their data?">
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				<button type="submit">Delete</button>
 			</form>
 			{% endif %}
 			<form method="post" action="{{ url_for('admin_reset_password', user_id=user.id) }}">

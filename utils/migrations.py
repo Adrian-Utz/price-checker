@@ -272,6 +272,24 @@ def _shared_lists(connection: sqlite3.Connection) -> None:
 	connection.execute("CREATE INDEX IF NOT EXISTS idx_list_members_user ON list_members(user_id)")
 
 
+def _scan_schedules(connection: sqlite3.Connection) -> None:
+	connection.execute("""
+		CREATE TABLE scan_schedules (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+			created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			start_at TEXT NOT NULL,
+			frequency TEXT NOT NULL CHECK (frequency IN ('once', 'daily', 'weekly', 'monthly')),
+			force INTEGER NOT NULL DEFAULT 0 CHECK (force IN (0, 1)),
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			generation INTEGER NOT NULL DEFAULT 0,
+			last_occurrence TEXT,
+			last_status TEXT,
+			last_detail TEXT
+		)
+	""")
+
+
 MIGRATIONS: list[tuple[str, Callable[[sqlite3.Connection], None]]] = [
 	("baseline schema", _baseline),
 	("users table", _users),
@@ -279,6 +297,7 @@ MIGRATIONS: list[tuple[str, Callable[[sqlite3.Connection], None]]] = [
 	("authentication", _auth),
 	("API spend tracking", _api_spend),
 	("shared lists", _shared_lists),
+	("scan schedules", _scan_schedules),
 ]
 LATEST_VERSION = len(MIGRATIONS)
 
