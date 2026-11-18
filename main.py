@@ -383,6 +383,14 @@ def check_host_header() -> None:
 
 @app.context_processor
 def inject_security_context() -> dict:
+	"""
+	This context processor injects various security related variables into the templates.
+	It returns a dictionary containing the following keys:
+	- csp_nonce: A nonces for Content Security Policy (CSP) headers, set only if it exitsts in the g object.
+	- auto_shutdown: A Boolean indicating if auto-shutdown is enabled and the server is local.
+	- mode_label: A dictionary mapping mode values to their labels, using the global SETTINGS object.
+	- connection_warnings: A list of connection warnings collected by the connection_warnings() function.
+	"""
 	return {
 		"csp_nonce": g.get("csp_nonce", ""),
 		"auto_shutdown": SETTINGS.is_local and auto_server_shutdown,
@@ -494,6 +502,7 @@ PUBLIC_ENDPOINTS = {"login", "register", "static", "healthz", "favicon"}
 
 @app.get("/favicon.ico")
 def favicon():
+	"""Return no content for the favicon"""
 	return "", 204
 
 
@@ -520,6 +529,7 @@ def require_login():
 
 @app.errorhandler(401)
 def not_signed_in(error):
+	"""Redirect because authentication has failed for the user."""
 	next_url = request.full_path.rstrip("?") if request.method == "GET" else None
 	return redirect(url_for("login", next=next_url) if next_url and next_url != "/" else url_for("login"))
 
@@ -565,9 +575,9 @@ def run_scan(user_id: int) -> bool:
 
 
 def refresh_product(product: sqlite3.Row, *, scheduled_force: bool | None = None) -> None:
-	# Reserve the credit before fetching: a failed fetch would otherwise overwrite the stored price with an error.
-	# Administrators' calls are still counted, but never refused (a limit of 0 means unlimited).
-	# A scan carries the user who started it; anything else (a re-check) is paid for by the signed-in user.
+	"""Reserve the credit before fetching: a failed fetch would otherwise overwrite the stored price with an error.
+	Administrators' calls are still counted, but never refused (a limit of 0 means unlimited).
+	A scan carries the user who started it; anything else (a re-check) is paid for by the signed-in user."""
 	columns = product.keys()
 	if "charge_user_id" in columns:
 		payer = product["charge_user_id"]
@@ -591,6 +601,7 @@ def refresh_product(product: sqlite3.Row, *, scheduled_force: bool | None = None
 
 
 def scan_allowed(user_id: int) -> bool:
+	"""If called, Check if the user is in developer mode and see if they are allowed to scan."""
 	return _scan_allowed(
 		user_id=user_id,
 		connect=connect,
@@ -749,6 +760,7 @@ def rate_limited_response(template: str, retry_after: int, **context):
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+	"""Login Function and authentication"""
 	require_accounts()
 	next_url = request.values.get("next", "")
 	context = {"next_url": next_url, "message": request.args.get("message"), "registration": SETTINGS.registration, "remember_enabled": SETTINGS.remember_days > 0}
@@ -761,6 +773,7 @@ def login():
 		wait = auth.retry_after_seconds(connection, ip, "login", SETTINGS.login_ip_limit)
 	if wait:
 		return rate_limited_response("login.html", wait, **context)
+	#Artificially add a wait time so that passwords can't be guessed by how long it took to check
 	with connect() as connection:
 		user = auth.authenticate(
 			connection, request.form.get("username", ""), request.form.get("password", ""),
@@ -1182,6 +1195,7 @@ def index():
 
 @app.get("/dev/responses")
 def dev_responses():
+	"""Returns the page to see recent API responces and the entire JSON dump pulled from them."""
 	if not dev_access():
 		abort(404)
 	with connect_dev() as connection:
@@ -1618,6 +1632,7 @@ def open_app_browser(host: str, port: int) -> None:
 
 
 def app_url(host: str, port: int) -> str:
+	"""Set up the application's URL from the env variable"""
 	configured_scheme = os.environ.get("PRICE_CHECKER_URL_SCHEME")
 	if configured_scheme:
 		scheme = configured_scheme.strip().lower()
@@ -1646,6 +1661,7 @@ def read_new_password(prompt: str = "New password") -> str:
 
 
 def cli_create_admin(arguments: list[str]) -> None:
+	"""Create an admin username and password before the application starts for safty reasons"""
 	username = (arguments[0] if arguments else os.environ.get("PRICE_CHECKER_ADMIN_USERNAME") or input("Admin username: ")).strip()
 	password = read_new_password("Admin password")
 	try:
@@ -1660,10 +1676,12 @@ def cli_create_admin(arguments: list[str]) -> None:
 
 
 def cli_reset_password(arguments: list[str]) -> None:
+	"""Reset a users password through the CLI if needed. """
 	username = (arguments[0] if arguments else input("Username: ")).strip()
 	with connect() as connection:
 		row = connection.execute("SELECT id FROM users WHERE username = ? AND username != 'local'", (username,)).fetchone()
 		if row is None:
+			#Username not found
 			raise SystemExit(f"No account named '{username}'.")
 		try:
 			auth.set_password(connection, row["id"], read_new_password())
@@ -1705,40 +1723,54 @@ def run_scheduled_scans() -> None:
 
 
 def run_list_schedule(schedule: sqlite3.Row, occurrence: str) -> None:
-	status, detail = "skipped", None
+	"""Set up a schedule for list checks. """
+	status, detail = "skipped", None #Initiate default status and detail
 	try:
+		#Aquire locks for the schedules creator and list ID
 		with scan_lock_for(schedule["created_by"]), list_scan_lock_for(schedule["list_id"]):
+			#Connect to the database
 			with connect() as connection:
+				#Check if the schedule is active
 				active = connection.execute(
 					"SELECT 1 FROM scan_schedules WHERE id = ? AND enabled = 1 AND list_id = ? AND created_by = ? AND generation = ?",
 					(schedule["id"], schedule["list_id"], schedule["created_by"], schedule["generation"]),
 				).fetchone()
 				if not active:
 					return
+				#Update the schedule's last status to 'running'
 				connection.execute(
 					"UPDATE scan_schedules SET last_status = 'running' WHERE id = ? AND last_occurrence = ?",
 					(schedule["id"], occurrence),
 				)
+				#Fetch the creator's details
 				creator = connection.execute("SELECT role, disabled FROM users WHERE id = ?", (schedule["created_by"],)).fetchone()
+				#Fetch products for the list
 				products = connection.execute(
 					"SELECT p.*, ? AS charge_user_id FROM products p WHERE p.list_id = ? ORDER BY p.id",
 					(schedule["created_by"], schedule["list_id"]),
 				).fetchall()
+			#Check if the creator is an active administrator
 			if creator is None or creator["disabled"] or creator["role"] != "admin":
 				detail = "The schedule creator is no longer an active administrator."
+			#Check if an API provider is set up
 			elif not provider_ready("auto"):
 				detail = "No API provider is set up."
 			else:
+				#Process the products
 				finished = scan_products(
 					products, force=bool(schedule["force"]), cache_is_fresh=cache_is_fresh,
 					min_delay_seconds=MIN_DELAY_SECONDS,
 					refresh_product=lambda product: refresh_product(product, scheduled_force=bool(schedule["force"])),
 				)
+				#Set the status based on whether the scan was finished or stopped
 				status = "completed" if finished else "stopped"
+				# Set the detail message based on the status
 				detail = "Scan processed; check individual products for fetch errors." if finished else "Daily API budget exhausted."
 	except Exception as error:
+		#Exeption handling
 		status, detail = "failed", str(error)
 		print(f"Scheduled list scan {schedule['id']} failed: {error}")
+	# Update the schedule's last status and detail in the database
 	with connect() as connection:
 		connection.execute(
 			"UPDATE scan_schedules SET last_status = ?, last_detail = ? WHERE id = ? AND last_occurrence = ?",
@@ -1765,28 +1797,43 @@ def dispatch_list_schedules(now: datetime) -> None:
 
 
 def start_list_scheduler() -> None:
+	"""This function initializes the list scheduler by setting the last status of running and queued scans to 'interupted' and providing a loop to periodically dispatch list schedules"""
+	#Connect to database and update the last status of running and queued scans
 	with connect() as connection:
 		connection.execute("UPDATE scan_schedules SET last_status = 'interrupted', last_detail = 'The server stopped before this scan finished.' WHERE last_status IN ('running', 'queued')")
 
 	def worker() -> None:
+		"""Continuously retrieve and process scheduled list scans from a queue
+		It then runs the run_list_schedule function for each scan and handles exceptions"""
 		while True:
+			#Retrieve a scheduled list scan from the queue
 			entry, occurrence = scheduled_list_queue.get()
 			try:
+				#Run the list schedule
 				run_list_schedule(entry, occurrence)
 			except Exception as error:
+				#Print an error message if the scan could not update its status
 				print(f"Scheduled list scan {entry['id']} could not update its status: {error}")
 			finally:
+				#Mark the task as done in queue
 				scheduled_list_queue.task_done()
 
 	def loop() -> None:
+		"""Periodically dispatches list schedules by calling the 'dispatch_list_schedules'
+		with the current UTC time. It handles any exceptions that occur durring dispatch."""
 		while True:
 			try:
+				# Dispatch list schedules
 				dispatch_list_schedules(utc_now())
 			except Exception as error:
+				#Print an error message if the dispatch failed
 				print(f"Schedule dispatch failed: {error}")
+			#Sleep for 1 second before checking again
 			time.sleep(1)
 
+	#Start a thread to handle list scan processing
 	threading.Thread(target=worker, daemon=True, name="list-scan-worker").start()
+	#Start a thread to handle schedule dispatching
 	threading.Thread(target=loop, daemon=True, name="list-scheduler").start()
 
 
@@ -1800,6 +1847,7 @@ def start_background_tasks() -> None:
 
 
 def run_cli_command(command: str, arguments: list[str]) -> None:
+	"""CLI commands that the person running the machine can use"""
 	if command == "init-secret":
 		path = create_secret_file(SETTINGS.data_dir)
 		print(f"Secret ready at {path}")
