@@ -130,6 +130,45 @@ def test_local_schedules_follow_first_admin():
 		assert connection.execute("SELECT created_by FROM scan_schedules").fetchone()[0] == admin
 
 
+def test_sub_admin_schedule_runs(monkeypatch):
+	monkeypatch.setattr(main, "SETTINGS", dataclasses.replace(main.SETTINGS, mode="lan", auth_required=True))
+	monkeypatch.setattr(main, "provider_ready", lambda provider: True)
+	calls = []
+	monkeypatch.setattr(main, "scan_products", lambda *args, **kwargs: calls.append(True) or True)
+	with connect() as connection:
+		sub = create_user(connection, "helper", "correct horse battery", "sub-admin")
+		list_id = create_list(connection, "Scheduled")
+		connection.execute("INSERT INTO scan_schedules (list_id, created_by, start_at, frequency, last_occurrence) VALUES (?, ?, '2030-01-31T12:30', 'daily', '2030-01-31T12:30')", (list_id, sub))
+		row = connection.execute("SELECT * FROM scan_schedules").fetchone()
+	main.run_list_schedule(row, "2030-01-31T12:30")
+	assert calls == [True]
+	with connect() as connection:
+		assert connection.execute("SELECT last_status FROM scan_schedules").fetchone()[0] == "completed"
+
+
+def test_list_schedule_force_is_independent_of_account_override(monkeypatch):
+	monkeypatch.setattr(main, "SETTINGS", dataclasses.replace(main.SETTINGS, mode="lan", auth_required=True, user_daily_api_calls=1, global_daily_api_calls=1))
+	monkeypatch.setattr(main, "provider_ready", lambda provider: True)
+	monkeypatch.setattr("utils.scanner.time.sleep", lambda _: None)
+	fetched = []
+	monkeypatch.setattr(main, "_refresh_product", lambda product, **kwargs: fetched.append(product["id"]))
+	with connect() as connection:
+		sub = create_user(connection, "helper", "correct horse battery", "sub-admin")
+		list_id = create_list(connection, "Scheduled")
+		product = connection.execute("INSERT INTO products (user_id, list_id, url, source, price, checked_at) VALUES (?, ?, 'https://example.com/p', 'Test', 1, ?)", (sub, list_id, main.utc_now().isoformat())).lastrowid
+		connection.execute("INSERT INTO api_spend (user_id, day, calls) VALUES (?, date('now'), 1)", (sub,))
+		connection.execute("INSERT INTO scan_schedules (list_id, created_by, start_at, frequency, last_occurrence) VALUES (?, ?, '2030-01-31T12:30', 'daily', '2030-01-31T12:30')", (list_id, sub))
+		row = connection.execute("SELECT * FROM scan_schedules").fetchone()
+	main.run_list_schedule(row, "2030-01-31T12:30")
+	assert fetched == []
+	with connect() as connection:
+		connection.execute("UPDATE users SET override_limits = 0 WHERE id = ?", (sub,))
+		connection.execute("UPDATE scan_schedules SET force = 1")
+		row = connection.execute("SELECT * FROM scan_schedules").fetchone()
+	main.run_list_schedule(row, "2030-01-31T12:30")
+	assert fetched == [product]
+
+
 def test_scheduled_scan_waits_for_list_and_disabled_queue_does_not_run(monkeypatch):
 	monkeypatch.setattr(main, "provider_ready", lambda provider: True)
 	calls = []

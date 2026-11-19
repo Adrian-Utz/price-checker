@@ -201,6 +201,66 @@ def test_lowes_provider_reads_numeric_price(monkeypatch):
     assert result["price"] == 12.99
 
 
+def test_lowes_unwrangle_extracts_bulk_product_discount(monkeypatch):
+    from main import app, connect, refresh_product
+    from utils.dev_responses import replay_dev_response
+
+    url = "https://www.lowes.com/pd/Example-Product/123456"
+    payload = {
+        "detail": {"name": "Example Lowes Product", "price": 26.88, "currency": "USD", "unit_price": 99.0},
+        "discounts": {"product": [{
+            "type": "product_discount",
+            "original_type": "ProductLevelPercentDiscount",
+            "label": "Bulk Savings",
+            "description": "$24.19/ Each (10% Off) when you buy 48+",
+            "min_quantity": 48,
+            "unit_price": 24.19,
+        }]},
+    }
+    client = UnwrangleClient("test-key")
+    monkeypatch.setattr(client, "request", lambda platform, **params: payload)
+    result = client.product(url)
+    assert (result["price"], result["bulk_price"], result["bulk_quantity"]) == (26.88, 24.19, 48)
+    replay = replay_dev_response("UnwrangleClient", url, payload)
+    assert replay["product"]["bulk_price"] == 24.19
+    assert replay["fields"]["bulk_price"]["path"] == "$.discounts.product[0].unit_price"
+    assert replay["fields"]["bulk_quantity"]["path"] == "$.discounts.product[0].min_quantity"
+    with connect() as connection:
+        product_id = connection.execute(
+            "INSERT INTO products (list_id, user_id, url, source) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, 'Lowes')",
+            (url,),
+        ).lastrowid
+        product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    monkeypatch.setattr("main.fetch_product", lambda url, **kwargs: client.product(url))
+    refresh_product(product)
+    with connect() as connection:
+        saved = connection.execute("SELECT price, bulk_price, bulk_quantity FROM products WHERE id = ?", (product_id,)).fetchone()
+        history = connection.execute("SELECT price, bulk_price FROM observations WHERE product_id = ?", (product_id,)).fetchone()
+    assert tuple(saved) == (26.88, 24.19, 48)
+    assert tuple(history) == (26.88, 24.19)
+    assert b"$24.19 when you buy 48+" in app.test_client().get("/").data
+
+
+@pytest.mark.parametrize(("discount", "expected"), [
+    ({"type": "product_discount", "unit_price": 24.19, "min_quantity": "48"}, (24.19, 48)),
+    ({"type": "product_discount", "unit_price": 24.19, "min_quantity": 1}, None),
+    ({"type": "product_discount", "unit_price": 28.00, "min_quantity": 48}, None),
+    ({"type": "product_discount", "unit_price": 24.19}, None),
+    ({"type": "shipping_discount", "unit_price": 24.19, "min_quantity": 48}, None),
+    ({"unit_price": 24.19, "min_quantity": 48}, None),
+])
+def test_unwrangle_only_uses_valid_quantity_product_discounts(discount, expected):
+    assert unwrangle_bulk_price({"discounts": [discount]}, regular_price=26.88) == expected
+
+
+def test_unwrangle_skips_invalid_discount_before_valid_bulk_discount():
+    discounts = [
+        {"type": "product_discount", "unit_price": 30, "min_quantity": 2},
+        {"type": "product_discount", "unit_price": 24.19, "min_quantity": 48},
+    ]
+    assert unwrangle_bulk_price({"product": discounts}, regular_price=26.88) == (24.19, 48)
+
+
 def test_lowes_provider_reads_plain_numeric_price_string(monkeypatch):
     """Verify that Unwrangle client converts plain numeric price strings to float."""
     client = UnwrangleClient("test-key")

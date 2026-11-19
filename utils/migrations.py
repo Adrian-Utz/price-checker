@@ -290,6 +290,34 @@ def _scan_schedules(connection: sqlite3.Connection) -> None:
 	""")
 
 
+def _sub_admin_role(connection: sqlite3.Connection) -> None:
+	"""Expand the users role constraint without changing references to users."""
+	connection.execute("""
+		CREATE TABLE users_new (
+			id INTEGER PRIMARY KEY,
+			username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'sub-admin', 'user')),
+			disabled INTEGER NOT NULL DEFAULT 0,
+			failed_logins INTEGER NOT NULL DEFAULT 0,
+			locked_until TEXT,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			session_version INTEGER NOT NULL DEFAULT 0,
+			last_login_at TEXT
+		)
+	""")
+	connection.execute("""
+		INSERT INTO users_new (id, username, password_hash, role, disabled, failed_logins, locked_until, created_at, session_version, last_login_at)
+		SELECT id, username, password_hash, role, disabled, failed_logins, locked_until, created_at, session_version, last_login_at FROM users
+	""")
+	connection.execute("DROP TABLE users")
+	connection.execute("ALTER TABLE users_new RENAME TO users")
+
+
+def _admin_overrides(connection: sqlite3.Connection) -> None:
+	connection.execute("ALTER TABLE users ADD COLUMN override_limits INTEGER NOT NULL DEFAULT 1 CHECK (override_limits IN (0, 1))")
+
+
 MIGRATIONS: list[tuple[str, Callable[[sqlite3.Connection], None]]] = [
 	("baseline schema", _baseline),
 	("users table", _users),
@@ -298,6 +326,8 @@ MIGRATIONS: list[tuple[str, Callable[[sqlite3.Connection], None]]] = [
 	("API spend tracking", _api_spend),
 	("shared lists", _shared_lists),
 	("scan schedules", _scan_schedules),
+	("sub-admin role", _sub_admin_role),
+	("administrator overrides", _admin_overrides),
 ]
 LATEST_VERSION = len(MIGRATIONS)
 

@@ -46,28 +46,39 @@ Written by: AJ Utz
 		</div>
 		<div class="user-actions">
 			{% if user.id != current_user_id %}
+			{% if full_admin or user.role == 'user' %}
 			<form method="post" action="{{ url_for('admin_set_role', user_id=user.id) }}">
 				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 				<select name="role" aria-label="Role for {{ user.username }}">
 					<option value="user" {{ 'selected' if user.role == 'user' }}>user</option>
+					<option value="sub-admin" {{ 'selected' if user.role == 'sub-admin' }}>sub-admin</option>
+					{% if full_admin %}
 					<option value="admin" {{ 'selected' if user.role == 'admin' }}>admin</option>
+					{% endif %}
 				</select>
 				<button type="submit">Set role</button>
 			</form>
+			{% endif %}
+			{% if full_admin or user.role != 'admin' or user.disabled %}
 			<form method="post" action="{{ url_for('admin_set_status', user_id=user.id) }}">
 				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 				<button type="submit" name="action" value="{{ 'enable' if user.disabled else 'disable' }}">{{ 'Enable' if user.disabled else 'Disable' }}</button>
 			</form>
+			{% endif %}
+			{% if full_admin or user.role != 'admin' %}
 			<form method="post" action="{{ url_for('admin_delete_user', user_id=user.id) }}" data-confirm="Delete {{ user.username }} and all of their data?">
 				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 				<button type="submit">Delete</button>
 			</form>
 			{% endif %}
+			{% endif %}
+			{% if full_admin or user.role == 'user' or user.id == current_user_id %}
 			<form method="post" action="{{ url_for('admin_reset_password', user_id=user.id) }}">
 				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 				<input name="password" type="password" autocomplete="new-password" minlength="10" placeholder="New password" aria-label="New password for {{ user.username }}" required>
 				<button type="submit">Reset password</button>
 			</form>
+			{% endif %}
 		</div>
 	</div>
 	{% endfor %}
@@ -80,7 +91,10 @@ Written by: AJ Utz
 		<input name="password" type="password" autocomplete="new-password" placeholder="Password (10+ characters)" aria-label="Password" minlength="10" required>
 		<select name="role" aria-label="Role">
 			<option value="user">user</option>
+			<option value="sub-admin">sub-admin</option>
+			{% if full_admin %}
 			<option value="admin">admin</option>
+			{% endif %}
 		</select>
 		<button type="submit">Create user</button>
 	</form>

@@ -7,6 +7,7 @@ from api_clients.serpapi_client import (
 )
 from api_clients.unwrangle_client import (
 	product_bulk_price as unwrangle_bulk_price,
+	product_discount_bulk_price,
 	product_price as unwrangle_product_price,
 )
 from utils.product_utils import product_query
@@ -33,6 +34,22 @@ def _find_json_field(value: object, field_names: tuple[str, ...], path: str = "$
 			if found_path:
 				return found_path, found_value
 	return None, None
+
+
+def _find_discount_fields(value: object, bulk: tuple[float, int], price: float | None, path: str = "$") -> tuple[str, object, str, object] | None:
+	if isinstance(value, dict):
+		if product_discount_bulk_price(value, price) == bulk:
+			return f"{path}.unit_price", value["unit_price"], f"{path}.min_quantity", value["min_quantity"]
+		for key, nested in value.items():
+			found = _find_discount_fields(nested, bulk, price, f"{path}.{key}")
+			if found:
+				return found
+	elif isinstance(value, list):
+		for index, nested in enumerate(value):
+			found = _find_discount_fields(nested, bulk, price, f"{path}[{index}]")
+			if found:
+				return found
+	return None
 
 
 def replay_dev_response(provider: str, url: str, payload: dict[str, object]) -> dict[str, object]:
@@ -64,6 +81,10 @@ def replay_dev_response(provider: str, url: str, payload: dict[str, object]) -> 
 		price_path, raw_price = _find_json_field(debug_source, ("list_price", "listing_price", "original_price"))
 	bulk_price_path, raw_bulk_price = _find_json_field(debug_source, ("bulk_price", "volume_price"))
 	quantity_path, raw_quantity = _find_json_field(debug_source, ("bulk_price_threshold", "bulk_price_quantity", "minimum_order_quantity", "quantity"))
+	if provider != "SerpApiClient" and bulk:
+		discount_fields = _find_discount_fields(debug_source, bulk, price)
+		if discount_fields:
+			bulk_price_path, raw_bulk_price, quantity_path, raw_quantity = discount_fields
 	return {
 		"product": {"title": title, "price": price, "currency": currency, "bulk_price": bulk_price, "bulk_quantity": bulk_quantity},
 		"fields": {

@@ -14,7 +14,8 @@ Written on: 10/21/2026
 Written by: AJ Utz
 """
 
-ROLES = ("admin", "user")
+ROLES = ("admin", "sub-admin", "user")
+ADMIN_ROLES = ("admin", "sub-admin")
 MIN_PASSWORD_LENGTH = 10
 MAX_PASSWORD_LENGTH = 256
 USERNAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{3,32}")
@@ -65,7 +66,7 @@ def create_user(connection: sqlite3.Connection, username: str, password: str, ro
 def delete_user(connection: sqlite3.Connection, admin_id: int, user_id: int) -> str:
 	"""Delete an account (and, via ON DELETE CASCADE, its data) on behalf of an admin; returns the username."""
 	admin = get_user(connection, admin_id)
-	if admin is None or admin["role"] != "admin" or admin["disabled"]:
+	if admin is None or admin["role"] not in ADMIN_ROLES or admin["disabled"]:
 		raise PermissionError("Only admins can delete users.")
 	if user_id == admin_id:
 		raise ValueError("You can't delete your own account.")
@@ -73,6 +74,8 @@ def delete_user(connection: sqlite3.Connection, admin_id: int, user_id: int) -> 
 	if target is None or target["username"] == LOCAL_USERNAME:
 		raise ValueError("That user doesn't exist.")
 	if target["role"] == "admin":
+		if admin["role"] == "sub-admin":
+			raise ValueError("Sub-admins can't delete administrators.")
 		remaining = connection.execute(
 			"SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0 AND id != ?", (user_id,)
 		).fetchone()[0]

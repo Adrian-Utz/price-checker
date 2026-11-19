@@ -103,6 +103,8 @@ PRICE_CHECKER_ALLOWED_HOSTS=192.168.1.20,nas.home.arpa   # optional but recommen
 
 `python main.py init-secret`, `python main.py create-admin <name>`, then `python main.py`. Startup prints the URLs to use.
 
+- The Users page offers a sub-admin role with administrator access. Sub-admins can reset regular users' passwords and their own, but cannot reset other admins' or sub-admins' passwords, change their roles, create or promote admins, or disable or delete admin accounts. They can still disable or delete users and other sub-admins.
+- Admins and sub-admins can turn off their per-account quota and cache override in the limits panel; it defaults to on. Explicit re-checks still bypass the cache and daily scan limit, and scheduled scans use their own settings.
 - `selfsigned` creates a certificate in `DATA_DIR/certs` that covers the hostname and the LAN addresses found at first start. Browsers warn once until you trust it. If the server's IP changes, run `python main.py make-cert` and restart.
 - `off` serves plain HTTP: fine on a trusted home network, but passwords are visible to anyone on it.
 - To run LAN mode under systemd, use `deploy/price-checker.service` but change the `ExecStart` to `/opt/price-checker/.venv/bin/python main.py`.

@@ -1,4 +1,5 @@
 import dataclasses
+from datetime import datetime, timezone
 
 import pytest
 
@@ -113,6 +114,116 @@ def test_admin_calls_skip_budgets_but_are_counted(lan, monkeypatch):
 	#Attempt to refresh the product for the user and expect an exception
 	with pytest.raises(Exception):
 		main.refresh_product(user_product)
+
+
+@pytest.mark.parametrize("role", ["admin", "sub-admin"])
+@pytest.mark.parametrize("mode", ["lan", "public"])
+def test_override_setting_is_per_account_and_admin_only(lan, monkeypatch, role, mode):
+	lan(user_daily_api_calls=7, rechecks_per_hour=5)
+	monkeypatch.setattr(main, "SETTINGS", dataclasses.replace(main.SETTINGS, mode=mode))
+	with connect() as connection:
+		create_user(connection, "helper", PASSWORD, role)
+	client = sign_in("helper")
+	other = sign_in("boss")
+	body = client.get("/").get_data(as_text=True)
+	assert 'name="override_limits" type="checkbox" value="1" checked' in body
+	assert "override_limits" not in sign_in().get("/").get_data(as_text=True)
+	assert sign_in().post("/account/overrides", data={"override_limits": "1"}).status_code == 403
+	assert client.post("/account/overrides", data={"override_limits": "invalid"}).status_code == 400
+	assert client.post("/account/overrides").status_code == 302
+	body = sign_in("helper").get("/").get_data(as_text=True)
+	assert 'name="override_limits" type="checkbox" value="1" checked' not in body
+	assert "API calls today" in body
+	assert "Re-checks this hour" in body
+	assert 'name="override_limits" type="checkbox" value="1" checked' in other.get("/").get_data(as_text=True)
+	main.init_dev_db()
+	assert client.get("/dev/responses").status_code == 200
+	assert client.post("/account/overrides", data={"override_limits": "1"}).status_code == 302
+	assert 'name="override_limits" type="checkbox" value="1" checked' in client.get("/").get_data(as_text=True)
+
+
+def test_override_changes_manual_scan_cache_daily_and_api_budgets(lan, monkeypatch):
+	lan(user_daily_api_calls=1, global_daily_api_calls=1)
+	monkeypatch.setattr("utils.scanner.time.sleep", lambda _: None)
+	fetched = []
+	monkeypatch.setattr(main, "_refresh_product", lambda product, **kwargs: fetched.append(product["id"]))
+	product_id = add_product(lan.admin)
+	with connect() as connection:
+		connection.execute("UPDATE products SET price = 3, checked_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), product_id))
+	client = sign_in("boss")
+	client.post("/account/overrides")
+	assert client.post("/scan").status_code == 302
+	assert fetched == []
+	assert "Only+one+completed+scan" in client.post("/scan").location
+	client.post("/account/overrides", data={"override_limits": "1"})
+	assert client.post("/scan").status_code == 302
+	assert client.post("/scan").status_code == 302
+	assert fetched == [product_id, product_id]
+	with connect() as connection:
+		assert calls_today(connection, lan.admin) == 2
+	client.post("/account/overrides")
+	assert "daily" in client.post(f"/recheck/{product_id}").location
+	assert fetched == [product_id, product_id]
+	with connect() as connection:
+		connection.execute("UPDATE scans SET status = 'stopped' WHERE user_id = ?", (lan.admin,))
+		connection.execute("UPDATE products SET checked_at = '2020-01-01T00:00:00+00:00' WHERE id = ?", (product_id,))
+	assert "budget+ran+out" in client.post("/scan").location
+	assert fetched == [product_id, product_id]
+
+
+def test_override_off_enforces_server_wide_budget(lan, monkeypatch):
+	lan(user_daily_api_calls=0, global_daily_api_calls=1, rechecks_per_hour=0)
+	fetched = []
+	monkeypatch.setattr(main, "_refresh_product", lambda product, **kwargs: fetched.append(product["id"]))
+	product_id = add_product(lan.admin)
+	with connect() as connection:
+		reserve_api_call(connection, lan.alice, user_limit=0, global_limit=0)
+	client = sign_in("boss")
+	client.post("/account/overrides")
+	assert "server-wide" in client.post(f"/recheck/{product_id}").location
+	assert fetched == []
+	client.post("/account/overrides", data={"override_limits": "1"})
+	client.post(f"/recheck/{product_id}")
+	assert fetched == [product_id]
+
+
+def test_override_setting_requires_csrf(lan, monkeypatch):
+	client = sign_in("boss")
+	monkeypatch.setitem(main.app.config, "CSRF_ENABLED", True)
+	assert client.post("/account/overrides").status_code == 400
+	assert main.user_overrides_limits(lan.admin)
+
+
+def test_override_off_enforces_recheck_limit_but_keeps_explicit_refresh(lan, monkeypatch):
+	lan(user_daily_api_calls=0, global_daily_api_calls=0, rechecks_per_hour=1)
+	fetched = []
+	monkeypatch.setattr(main, "_refresh_product", lambda product, **kwargs: fetched.append(product["id"]))
+	product_id = add_product(lan.admin)
+	with connect() as connection:
+		connection.execute("UPDATE products SET price = 3, checked_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), product_id))
+	client = sign_in("boss")
+	client.post("/account/overrides")
+	assert "Re-checked" in client.post(f"/recheck/{product_id}").location
+	assert "Too+many+re-checks" in client.post(f"/recheck/{product_id}").location
+	client.post("/account/overrides", data={"override_limits": "1"})
+	client.post(f"/recheck/{product_id}")
+	assert fetched == [product_id, product_id]
+
+
+def test_legacy_scheduled_scan_ignores_account_override(lan, monkeypatch):
+	lan(user_daily_api_calls=1, global_daily_api_calls=1)
+	monkeypatch.setattr(main, "provider_ready", lambda provider: True)
+	monkeypatch.setattr("utils.scanner.time.sleep", lambda _: None)
+	fetched = []
+	monkeypatch.setattr(main, "_refresh_product", lambda product, **kwargs: fetched.append(product["id"]))
+	product_id = add_product(lan.admin)
+	with connect() as connection:
+		connection.execute("UPDATE users SET override_limits = 0 WHERE id = ?", (lan.admin,))
+		connection.execute("UPDATE products SET price = 3, checked_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), product_id))
+	with connect() as connection:
+		reserve_api_call(connection, lan.admin, user_limit=0, global_limit=0)
+	main.run_scheduled_scans()
+	assert fetched == [product_id]
 
 
 def test_local_mode_keeps_the_beacon(monkeypatch):

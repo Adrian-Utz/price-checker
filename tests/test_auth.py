@@ -362,6 +362,65 @@ def test_admin_creates_users_and_changes_roles(lan):
 	assert admin.post("/admin/users/create", data={"username": "dave", "password": "short"}).status_code == 400
 
 
+@pytest.mark.parametrize("mode", ["lan", "public"])
+def test_sub_admin_permissions(lan, monkeypatch, mode):
+	monkeypatch.setattr(main, "SETTINGS", dataclasses.replace(main.SETTINGS, mode=mode))
+	main.init_dev_db()
+	with connect() as connection:
+		sub = create_user(connection, "helper", PASSWORD, "sub-admin")
+		other_sub = create_user(connection, "helper2", PASSWORD, "sub-admin")
+		other_admin = create_user(connection, "boss2", PASSWORD, "admin")
+	client, response = sign_in("helper")
+	assert response.status_code == 302
+	page = client.get("/admin/users").get_data(as_text=True)
+	assert f'/admin/users/{lan.ids["alice"]}/password' in page
+	assert f"/admin/users/{other_admin}/password" not in page
+	assert f"/admin/users/{other_sub}/password" not in page
+	assert f"/admin/users/{other_admin}/role" not in page
+	assert f"/admin/users/{other_sub}/role" not in page
+	assert f"/admin/users/{other_admin}/status" not in page
+	assert f"/admin/users/{other_admin}/delete" not in page
+	assert f"/admin/users/{other_sub}/status" in page
+	assert f"/admin/users/{other_sub}/delete" in page
+	assert 'value="admin"' not in page
+	assert client.get("/admin/lists").status_code == 200
+	assert client.get("/admin/schedules").status_code == 200
+	assert client.get("/dev/responses").status_code == 200
+	assert b"/admin/users" in client.get("/").data
+	assert main.user_has_dev_access(sub)
+
+	for target in (lan.ids["admin"], other_admin, other_sub):
+		assert client.post(f"/admin/users/{target}/password", data={"password": "a new password"}).status_code == 400
+		assert client.post(f"/admin/users/{target}/role", data={"role": "user"}).status_code == 400
+	assert client.post("/admin/users/create", data={"username": "newboss", "password": PASSWORD, "role": "admin"}).status_code == 400
+	assert client.post(f"/admin/users/{lan.ids['alice']}/role", data={"role": "admin"}).status_code == 400
+	assert client.post(f"/admin/users/{lan.ids['alice']}/password", data={"password": "reset by helper"}).status_code == 302
+	assert client.post("/admin/users/create", data={"username": "newhelper", "password": PASSWORD, "role": "sub-admin"}).status_code == 302
+	assert client.post(f"/admin/users/{lan.ids['alice']}/role", data={"role": "sub-admin"}).status_code == 302
+	assert client.post(f"/admin/users/{lan.ids['alice']}/role", data={"role": "user"}).status_code == 400
+	assert client.post(f"/admin/users/{other_sub}/status", data={"action": "disable"}).status_code == 302
+	assert client.post(f"/admin/users/{other_sub}/status", data={"action": "enable"}).status_code == 302
+	assert sign_in("boss", PASSWORD)[1].status_code == 302
+
+	admin, _ = sign_in("boss")
+	assert admin.post("/admin/users/create", data={"username": "createdhelper", "password": PASSWORD, "role": "sub-admin"}).status_code == 302
+	assert admin.post(f"/admin/users/{other_sub}/password", data={"password": "reset by admin"}).status_code == 302
+	assert admin.post(f"/admin/users/{other_sub}/role", data={"role": "user"}).status_code == 302
+	assert admin.post(f"/admin/users/{other_admin}/password", data={"password": "reset by admin"}).status_code == 302
+	assert client.post(f"/admin/users/{other_admin}/status", data={"action": "disable"}).status_code == 400
+	assert client.post(f"/admin/users/{other_admin}/delete").status_code == 400
+	assert user_row("boss2")["disabled"] == 0
+	assert admin.post(f"/admin/users/{other_admin}/status", data={"action": "disable"}).status_code == 302
+	assert f"/admin/users/{other_admin}/status" in client.get("/admin/users").get_data(as_text=True)
+	assert client.post(f"/admin/users/{other_admin}/delete").status_code == 400
+	assert client.post(f"/admin/users/{other_admin}/status", data={"action": "enable"}).status_code == 302
+	assert user_row("boss2")["disabled"] == 0
+	assert admin.post(f"/admin/users/{other_admin}/delete").status_code == 302
+	assert client.post(f"/admin/users/{other_sub}/delete").status_code == 302
+	assert client.post(f"/admin/users/{sub}/password", data={"password": "helper new password"}).status_code == 302
+	assert sign_in("helper", "helper new password")[1].status_code == 302
+
+
 def test_admin_cannot_demote_or_disable_themselves(lan):
 	#Sign in as the boss and attempt to demote or disable themselves, expecting 400 Bad request
 	admin, _ = sign_in("boss")

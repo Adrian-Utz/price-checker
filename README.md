@@ -12,8 +12,8 @@ It runs three ways:
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 11/10/2026  
-**Latest Version:** 0.1.2
+**Last Update on:** 11/19/2026  
+**Latest Version:** 0.1.3
 
 ## Main Capabilities
 
@@ -82,10 +82,12 @@ There is also a systemd unit for running without Docker. See [docs/deployment.md
 
 - Sign in at `/login`. Sessions end after 120 minutes idle, and "Keep me signed in" lasts 30 days (`PRICE_CHECKER_REMEMBER_DAYS=0` turns it off).
 - Administrators open **Users** to create accounts, disable them, reset passwords, change roles and make invite links.
+- Sub-admins have administrator access, but can reset only regular users' passwords and their own. They cannot change another admin's or sub-admin's role, create admins, promote users to admin, or disable or delete admin accounts. They can still disable or delete users and other sub-admins.
+- Admins and sub-admins can use **Override my quota and cache rules** in the limits panel. It is saved per account and defaults to on. Turn it off to honor the daily scan, API budget, hourly re-check and cache limits; explicitly re-checking items still bypasses the cache and daily scan limit. The product limit always applies. Scheduled scans are independent of this setting.
 - Administrators open **Lists** to create shared lists and choose which users see each one. Everyone on a list sees the same items, so a store or API change by one member shows for all of them. Only administrators add, import or remove items; each member's re-checks count against their own API limits.
 - Open **Schedules** to create, disable, enable, or delete multiple per-list scans (also available in local mode). Choose a future UTC start and a one-time, daily, weekly, or monthly recurrence; monthly runs skip months without that date. The app must be running at the scheduled minute: missed runs are not replayed. Local automatic tab-close shutdown stops the scheduler too.
 - Scheduled scans normally honor the cache and configured daily per-user and global API budgets, charged to the administrator who created the schedule. Force refresh bypasses both budgets and the cache but still counts calls; it can consume significant paid credits. Overlapping scans wait their turn. Runs are skipped if the creator is disabled or no longer an administrator. Deleting the creator or list deletes its schedules. The page shows the latest run status; check individual products for fetch errors. Disabling or deleting a schedule cancels queued runs but not running scans; queued work is lost if the server stops.
-- `PRICE_CHECKER_SCHEDULED_SCAN_HOUR` remains a separate legacy daily scan of enabled accounts; it can run alongside per-list schedules.
+- `PRICE_CHECKER_SCHEDULED_SCAN_HOUR` remains a separate legacy daily scan of enabled accounts; it can run alongside per-list schedules. It ignores the account checkbox and retains its previous behavior: administrator scans bypass the daily scan, cache and API budget limits.
 - `PRICE_CHECKER_REGISTRATION` is `admin` (default, no sign-up page), `invite` (single-use links) or `open`.
 - Passwords are 10 to 256 characters with no complexity rules. Five failed logins lock an account for 15 minutes, and each address is rate limited.
 - Command line: `python main.py create-admin [name]`, `python main.py reset-password [name]`, `python main.py backup [keep]`. In Docker, use `docker compose exec app python main.py ...`. For scripts, set `PRICE_CHECKER_ADMIN_PASSWORD` instead of typing the password.
@@ -110,7 +112,7 @@ PRICE_CHECKER_API_PROVIDER=auto
 
 **SerpApi** has a free monthly plan. Requests wait up to 90 seconds; raise `SERPAPI_TIMEOUT_SECONDS` on a slow network. Timed-out requests are not retried automatically because SerpApi may already have counted them.
 
-**Unwrangle** has a free trial of 100 credits. (Not renuable)
+**Unwrangle** has a free trial of 100 credits. (Not renuable) Lowe's bulk-savings discounts are shown when a unit price and minimum quantity are available.
 
 **Apify** is pay-per-product (about $5 per 1,000 lookups; free accounts are limited). Copy your token from the Apify Console (Settings > API & Integrations). Optional settings:
 
@@ -125,7 +127,7 @@ The actor looks products up by product ID (from the Lowes URL) and a 5-digit ZIP
 
 ## Developer mode
 
-In local mode, set `PRICE_CHECKER_DEVELOPER_MODE=1`. In LAN and public modes, every administrator always has it. It disables the daily scan limit, shows Re-check on every product, and saves each raw API response to `price_checker.dev.sqlite3` (`PRICE_CHECKER_DEV_DB` changes the path; the newest 1000 are kept in hosted modes). The **API response lab** lets you browse the latest 100 responses and replay one offline. In hosted modes administrators also skip the per-user API budget and re-check limit (their calls are still counted), non-admins get a 404 for the lab, and the lab shows every user's product URLs. Scheduled scans are not recorded.
+In local mode, set `PRICE_CHECKER_DEVELOPER_MODE=1` to bypass the daily scan limit and cache. In LAN and public modes, administrators always have developer tools and can choose whether to override limits as described above; API calls are still counted. Developer tools show Re-check on every product and save each raw API response to `price_checker.dev.sqlite3` (`PRICE_CHECKER_DEV_DB` changes the path; the newest 1000 are kept in hosted modes). The **API response lab** lets you browse the latest 100 responses and replay one offline. Non-admins get a 404 for the lab, and the lab shows every user's product URLs. Scheduled scans are not recorded.
 
 ## Importing and exporting
 

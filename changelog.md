@@ -216,3 +216,6 @@ Things to know
 
 # [v0.1.2](https://github.com/Adrian-Utz/price-checker/releases/tag/0.1.2)
 - Added a scheduling function and page. Allows admins to set a date and time to run a check. If the date passed and the server was down or offline, the check is skipped. 
+
+# [v0.1.3](https://github.com/Adrian-Utz/price-checker/releases/tag/0.1.3)
+- Made some minor fixes with the Unwrangle API provider, it was not locating bulk pricing for lowes products. Added Sub-admin role, Sub-admins can reset regular users’ passwords and their own, but not other admins’ or sub-admins’ passwords. They also can’t change privileged roles or create admins. Added a per-account checkbox in the limits panel.

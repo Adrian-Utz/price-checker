@@ -67,6 +67,41 @@ def test_migration_assigns_existing_rows_to_local_user(tmp_path):
 		assert connection.execute(f"SELECT DISTINCT list_id FROM {table}").fetchall() == [(personal,)]
 
 
+def test_sub_admin_migration_preserves_users_and_foreign_keys(tmp_path):
+	connection = sqlite3.connect(tmp_path / "v7.sqlite3")
+	connection.row_factory = sqlite3.Row
+	for _, step in MIGRATIONS[:7]:
+		step(connection)
+	connection.execute("PRAGMA user_version = 7")
+	user_id = create_user(connection, "owner", "correct horse battery", "admin")
+	connection.execute("UPDATE users SET session_version = 3, last_login_at = '2026-01-01' WHERE id = ?", (user_id,))
+	list_id = ensure_personal_list(connection, user_id)
+	connection.execute("INSERT INTO scan_schedules (list_id, created_by, start_at, frequency) VALUES (?, ?, '2030-01-01T12:00', 'daily')", (list_id, user_id))
+	connection.commit()
+
+	assert migrate(connection) == LATEST_VERSION
+	user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+	assert (user["username"], user["role"], user["session_version"], user["last_login_at"]) == ("owner", "admin", 3, "2026-01-01")
+	assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+	assert connection.execute("SELECT user_id FROM list_members WHERE list_id = ?", (list_id,)).fetchone()[0] == user_id
+	create_user(connection, "helper", "correct horse battery", "sub-admin")
+	connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+	assert connection.execute("SELECT COUNT(*) FROM scan_schedules WHERE created_by = ?", (user_id,)).fetchone()[0] == 0
+
+
+def test_override_migration_defaults_existing_accounts_to_enabled(tmp_path):
+	connection = sqlite3.connect(tmp_path / "v8.sqlite3")
+	connection.row_factory = sqlite3.Row
+	for _, step in MIGRATIONS[:8]:
+		step(connection)
+	connection.execute("PRAGMA user_version = 8")
+	user_id = create_user(connection, "owner", "correct horse battery", "admin")
+	connection.commit()
+	assert migrate(connection) == LATEST_VERSION
+	assert connection.execute("SELECT override_limits FROM users WHERE id = ?", (user_id,)).fetchone()[0] == 1
+	assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def test_store_numbers_are_unique_per_list_not_globally(accounts):
 	ids = accounts.ids
 	with connect() as connection:

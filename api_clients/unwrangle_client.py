@@ -103,10 +103,24 @@ def product_price(value: Any) -> float | None:
     return None
 
 
+def product_discount_bulk_price(value: Any, regular_price: float | None = None) -> tuple[float, int] | None:
+    if not isinstance(value, dict) or value.get("type") != "product_discount":
+        return None
+    price = product_price(value.get("unit_price"))
+    raw_quantity = value.get("min_quantity")
+    quantity = int(raw_quantity) if isinstance(raw_quantity, str) and re.fullmatch(r"\s*\d+\s*", raw_quantity) else parse_quantity(raw_quantity)
+    if price is not None and quantity is not None and quantity > 1 and (regular_price is None or price < regular_price):
+        return price, quantity
+    return None
+
+
 def product_bulk_price(value: Any, regular_price: float | None = None) -> tuple[float, int] | None:
     """Find a bulk price and the minimum quantity needed to receive it."""
     if not isinstance(value, dict):
         return None
+    discount = product_discount_bulk_price(value, regular_price)
+    if discount is not None:
+        return discount
     for quantity_key in ("bulk_price_threshold", "bulk_price_quantity"):
         if "bulk_price" in value and quantity_key in value:
             price = product_price(value["bulk_price"])

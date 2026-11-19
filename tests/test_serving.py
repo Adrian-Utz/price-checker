@@ -164,8 +164,8 @@ def test_scheduled_scan_runs_each_account_once(monkeypatch):
 	monkeypatch.setattr(main, "provider_ready", lambda provider: True)
 	scanned = []
 	#Set a function to append user IDs to the scanned list
-	monkeypatch.setattr(main, "scan_allowed", lambda user_id: True)
-	monkeypatch.setattr(main, "run_scan", lambda user_id: scanned.append(user_id) or True)
+	monkeypatch.setattr(main, "scan_allowed", lambda user_id, **kwargs: True)
+	monkeypatch.setattr(main, "run_scan", lambda user_id, **kwargs: scanned.append(user_id) or True)
 	#Run the scheduled scans
 	main.run_scheduled_scans()
 	#Check the list for the user id of alice

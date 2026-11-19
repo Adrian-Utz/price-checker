@@ -71,7 +71,7 @@ from utils.dev_responses import replay_dev_response
 from utils.migrations import LOCAL_USERNAME, UNUSABLE_PASSWORD_HASH
 from utils.product_utils import ensure_success_status, normalize_url, parse_price, product_query
 from utils.serving import ensure_tls_files, serve, start_scheduler
-from utils.users import claim_local_data, create_user, delete_user, get_user, local_user_id, real_user_count
+from utils.users import ADMIN_ROLES, claim_local_data, create_user, delete_user, get_user, local_user_id, real_user_count
 from utils import auth
 from utils import lists as shared_lists
 from utils import schedules
@@ -176,7 +176,15 @@ def user_has_dev_access(user_id: int) -> bool:
 		return DEVELOPER_MODE
 	with connect() as connection:
 		row = connection.execute("SELECT role FROM users WHERE id = ? AND disabled = 0", (user_id,)).fetchone()
-	return row is not None and row["role"] == "admin"
+	return row is not None and row["role"] in ADMIN_ROLES
+
+
+def user_overrides_limits(user_id: int) -> bool:
+	if SETTINGS.is_local:
+		return DEVELOPER_MODE
+	with connect() as connection:
+		row = connection.execute("SELECT role, override_limits FROM users WHERE id = ? AND disabled = 0", (user_id,)).fetchone()
+	return row is not None and row["role"] in ADMIN_ROLES and bool(row["override_limits"])
 
 
 def dev_access() -> bool:
@@ -418,7 +426,7 @@ def add_security_headers(response):
 
 
 def api_budget_view(user_id: int) -> dict | None:
-	if not SETTINGS.user_daily_api_calls or user_has_dev_access(user_id):
+	if not SETTINGS.user_daily_api_calls or user_overrides_limits(user_id):
 		return None
 	with connect() as connection:
 		return {"used": calls_today(connection, user_id), "limit": SETTINGS.user_daily_api_calls}
@@ -427,7 +435,7 @@ def api_budget_view(user_id: int) -> dict | None:
 def quota_view(user_id: int, product_count: int) -> dict:
 	"""What this user has used of each limit, for the quota panel. A limit of 0 means unlimited and is shown as None."""
 	quota = {"products": {"used": product_count, "limit": MAX_URLS}, "api": api_budget_view(user_id), "rechecks": None}
-	if SETTINGS.rechecks_per_hour and not dev_access():
+	if SETTINGS.rechecks_per_hour and not user_overrides_limits(user_id):
 		with connect() as connection:
 			used = auth.attempts_in_window(connection, str(user_id), "recheck", 3600)
 		quota["rechecks"] = {"used": min(used, SETTINGS.rechecks_per_hour), "limit": SETTINGS.rechecks_per_hour}
@@ -454,7 +462,7 @@ def connection_warnings() -> list[str]:
 def recheck_limited():
 	"""Per-user cap on re-check requests per hour. Returns a redirect when the user is over it, else None."""
 	limit = SETTINGS.rechecks_per_hour
-	if not limit or dev_access():
+	if not limit or user_overrides_limits(current_user_id()):
 		return None
 	identity = str(current_user_id())
 	with connect() as connection:
@@ -557,7 +565,9 @@ def schedule_shutdown() -> None:
 		shutdown_timer.start()
 
 
-def run_scan(user_id: int) -> bool:
+def run_scan(user_id: int, *, override: bool | None = None) -> bool:
+	if override is None:
+		override = user_overrides_limits(user_id)
 	with connect() as connection:
 		list_ids = [row["list_id"] for row in connection.execute("SELECT list_id FROM list_members WHERE user_id = ? ORDER BY list_id", (user_id,))]
 	with ExitStack() as stack:
@@ -567,16 +577,16 @@ def run_scan(user_id: int) -> bool:
 			user_id=user_id,
 			connect=connect,
 			utc_now=utc_now,
-			developer_mode=user_has_dev_access(user_id),
+			developer_mode=override,
 			cache_is_fresh=cache_is_fresh,
 			min_delay_seconds=MIN_DELAY_SECONDS,
-			refresh_product=refresh_product,
+			refresh_product=lambda product: refresh_product(product, bypass_limits=override),
 		)
 
 
-def refresh_product(product: sqlite3.Row, *, scheduled_force: bool | None = None) -> None:
+def refresh_product(product: sqlite3.Row, *, bypass_limits: bool | None = None) -> None:
 	"""Reserve the credit before fetching: a failed fetch would otherwise overwrite the stored price with an error.
-	Administrators' calls are still counted, but never refused (a limit of 0 means unlimited).
+	Calls bypassing budgets are still counted (a limit of 0 means unlimited).
 	A scan carries the user who started it; anything else (a re-check) is paid for by the signed-in user."""
 	columns = product.keys()
 	if "charge_user_id" in columns:
@@ -585,7 +595,7 @@ def refresh_product(product: sqlite3.Row, *, scheduled_force: bool | None = None
 		payer = current_user_id()
 	else:
 		payer = product["user_id"]
-	unlimited = user_has_dev_access(payer) if scheduled_force is None else scheduled_force
+	unlimited = user_overrides_limits(payer) if bypass_limits is None else bypass_limits
 	with connect() as connection:
 		reserve_api_call(
 			connection, payer,
@@ -600,12 +610,12 @@ def refresh_product(product: sqlite3.Row, *, scheduled_force: bool | None = None
 	)
 
 
-def scan_allowed(user_id: int) -> bool:
+def scan_allowed(user_id: int, *, override: bool | None = None) -> bool:
 	"""If called, Check if the user is in developer mode and see if they are allowed to scan."""
 	return _scan_allowed(
 		user_id=user_id,
 		connect=connect,
-		developer_mode=user_has_dev_access(user_id),
+		developer_mode=user_overrides_limits(user_id) if override is None else override,
 		local_calendar_date=local_calendar_date,
 	)
 
@@ -664,7 +674,7 @@ def current_user_id() -> int:
 
 
 def is_admin() -> bool:
-	return current_user()["role"] == "admin"
+	return current_user()["role"] in ADMIN_ROLES
 
 
 def require_admin() -> None:
@@ -841,6 +851,18 @@ def account():
 	return render_template("account.html", csrf_token=session["csrf_token"], username=user["username"], is_admin=is_admin(), message=request.args.get("message"), error=None)
 
 
+@app.post("/account/overrides")
+def set_account_overrides():
+	require_accounts()
+	require_admin()
+	value = request.form.get("override_limits", "")
+	if value not in ("", "1"):
+		abort(400, description="Invalid override setting.")
+	with connect() as connection:
+		connection.execute("UPDATE users SET override_limits = ? WHERE id = ?", (int(value == "1"), current_user_id()))
+	return redirect(url_for("index", message="Quota and cache override updated."))
+
+
 @app.post("/account/password")
 def change_own_password():
 	require_accounts()
@@ -878,7 +900,7 @@ def render_admin_users(message: str | None = None, error: str | None = None, inv
 		invites = auth.list_invites(connection) if SETTINGS.registration == "invite" else []
 	return render_template(
 		"admin_users.html", csrf_token=session["csrf_token"], users=users, user_lists=user_lists, invites=invites, invite_url=invite_url,
-		registration=SETTINGS.registration, current_user_id=current_user_id(), message=message, error=error,
+		registration=SETTINGS.registration, current_user_id=current_user_id(), full_admin=current_user()["role"] == "admin", message=message, error=error,
 		max_urls=MAX_URLS, now=auth.utc_text(),
 	), status
 
@@ -905,8 +927,8 @@ def admin_users():
 @app.post("/admin/users/create")
 def admin_create_user():
 	return admin_action(
-		lambda connection: create_user(
-			connection, request.form.get("username", ""), request.form.get("password", ""),
+		lambda connection: auth.admin_create_user(
+			connection, current_user_id(), request.form.get("username", ""), request.form.get("password", ""),
 			request.form.get("role", "user"),
 		),
 		"Account created.",
@@ -933,7 +955,7 @@ def admin_set_status(user_id: int):
 @app.post("/admin/users/<int:user_id>/password")
 def admin_reset_password(user_id: int):
 	return admin_action(
-		lambda connection: auth.set_password(connection, user_id, request.form.get("password", "")),
+		lambda connection: auth.admin_set_password(connection, current_user_id(), user_id, request.form.get("password", "")),
 		"Password reset. The user was signed out everywhere.",
 	)
 
@@ -1173,6 +1195,7 @@ def index():
 		is_admin=is_admin(),
 		current_username=current_user()["username"],
 		accounts_enabled=not SETTINGS.is_local,
+		override_limits=user_overrides_limits(user_id),
 		quota=quota_view(user_id, max((sum(1 for p in products if p["list_id"] == list_id) for list_id in {p["list_id"] for p in products}), default=0)),
 		serpapi_ready=serpapi_ready(), 
 		unwrangle_ready=unwrangle_ready(), 
@@ -1477,9 +1500,10 @@ def scan():
 	if not lock.acquire(blocking=False):
 		return redirect(url_for("index", message="A scan is already running for your account."))
 	try:
-		if not scan_allowed(user_id):
+		override = user_overrides_limits(user_id)
+		if not scan_allowed(user_id, override=override):
 			return redirect(url_for("index", message="Only one completed scan is allowed per day."))
-		finished = run_scan(user_id)
+		finished = run_scan(user_id, override=override)
 	finally:
 		lock.release()
 
@@ -1714,8 +1738,9 @@ def run_scheduled_scans() -> None:
 		if not lock.acquire(blocking=False):
 			continue
 		try:
-			if scan_allowed(user_id):
-				run_scan(user_id)
+			override = user_has_dev_access(user_id)
+			if scan_allowed(user_id, override=override):
+				run_scan(user_id, override=override)
 		except Exception as error: #One account's failure shouldn't skip everyone else
 			print(f"Scheduled scan failed for user {user_id}: {error}")
 		finally:
@@ -1750,7 +1775,7 @@ def run_list_schedule(schedule: sqlite3.Row, occurrence: str) -> None:
 					(schedule["created_by"], schedule["list_id"]),
 				).fetchall()
 			#Check if the creator is an active administrator
-			if creator is None or creator["disabled"] or creator["role"] != "admin":
+			if creator is None or creator["disabled"] or creator["role"] not in ADMIN_ROLES:
 				detail = "The schedule creator is no longer an active administrator."
 			#Check if an API provider is set up
 			elif not provider_ready("auto"):
@@ -1760,7 +1785,7 @@ def run_list_schedule(schedule: sqlite3.Row, occurrence: str) -> None:
 				finished = scan_products(
 					products, force=bool(schedule["force"]), cache_is_fresh=cache_is_fresh,
 					min_delay_seconds=MIN_DELAY_SECONDS,
-					refresh_product=lambda product: refresh_product(product, scheduled_force=bool(schedule["force"])),
+					refresh_product=lambda product: refresh_product(product, bypass_limits=bool(schedule["force"])),
 				)
 				#Set the status based on whether the scan was finished or stopped
 				status = "completed" if finished else "stopped"

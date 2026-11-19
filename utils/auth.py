@@ -7,7 +7,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from utils.migrations import LOCAL_USERNAME, UNUSABLE_PASSWORD_HASH
-from utils.users import ROLES, create_user, validate_password
+from utils.users import ADMIN_ROLES, ROLES, create_user, get_user, validate_password
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -115,10 +115,33 @@ def set_password(connection: sqlite3.Connection, user_id: int, password: str) ->
 	)
 
 
+def _admin_actor(connection: sqlite3.Connection, actor_id: int) -> sqlite3.Row:
+	actor = get_user(connection, actor_id)
+	if actor is None or actor["disabled"] or actor["role"] not in ADMIN_ROLES:
+		raise ValueError("Only an administrator can do that.")
+	return actor
+
+
+def admin_set_password(connection: sqlite3.Connection, actor_id: int, user_id: int, password: str) -> None:
+	actor = _admin_actor(connection, actor_id)
+	target = get_user(connection, user_id)
+	if actor["role"] == "sub-admin" and target is not None:
+		if user_id != actor_id and target["role"] != "user":
+			raise ValueError("Sub-admins can't reset another administrator's password.")
+	set_password(connection, user_id, password)
+
+
+def admin_create_user(connection: sqlite3.Connection, actor_id: int, username: str, password: str, role: str) -> int:
+	actor = _admin_actor(connection, actor_id)
+	if actor["role"] == "sub-admin" and role == "admin":
+		raise ValueError("Sub-admins can't create administrators.")
+	return create_user(connection, username, password, role)
+
+
 def _managed_user(connection: sqlite3.Connection, actor_id: int, target_id: int) -> sqlite3.Row:
 	if actor_id == target_id:
 		raise ValueError("You can't change your own role or status. Ask another administrator.")
-	target = connection.execute("SELECT id, username FROM users WHERE id = ? AND username != ?", (target_id, LOCAL_USERNAME)).fetchone()
+	target = connection.execute("SELECT id, username, role FROM users WHERE id = ? AND username != ?", (target_id, LOCAL_USERNAME)).fetchone()
 	if target is None:
 		raise ValueError("That account does not exist.")
 	return target
@@ -127,12 +150,18 @@ def _managed_user(connection: sqlite3.Connection, actor_id: int, target_id: int)
 def set_role(connection: sqlite3.Connection, actor_id: int, target_id: int, role: str) -> None:
 	if role not in ROLES:
 		raise ValueError("Unknown role.")
-	_managed_user(connection, actor_id, target_id)
+	target = _managed_user(connection, actor_id, target_id)
+	actor = _admin_actor(connection, actor_id)
+	if actor["role"] == "sub-admin" and (target["role"] != "user" or role == "admin"):
+		raise ValueError("Sub-admins can't change administrator roles or promote users to admin.")
 	connection.execute("UPDATE users SET role = ? WHERE id = ?", (role, target_id))
 
 
 def set_disabled(connection: sqlite3.Connection, actor_id: int, target_id: int, disabled: bool) -> None:
-	_managed_user(connection, actor_id, target_id)
+	target = _managed_user(connection, actor_id, target_id)
+	actor = _admin_actor(connection, actor_id)
+	if disabled and actor["role"] == "sub-admin" and target["role"] == "admin":
+		raise ValueError("Sub-admins can't disable administrators.")
 	connection.execute(
 		"UPDATE users SET disabled = ?, session_version = session_version + 1, failed_logins = 0, locked_until = NULL WHERE id = ?",
 		(int(disabled), target_id),

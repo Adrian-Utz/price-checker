@@ -33,6 +33,14 @@ Written by: AJ Utz
 		</div>
 		{% endif %}
 	</div>
+	{% if accounts_enabled and is_admin %}
+	<form class="override-select" method="post" action="{{ url_for('set_account_overrides') }}">
+		<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+		<label><input name="override_limits" type="checkbox" value="1" {{ 'checked' if override_limits }}> Override my quota and cache rules</label>
+		<button type="submit">Save</button>
+		<span class="help">Bypasses the cache, daily scan, API budget and hourly re-check limits, which may increase paid API usage. The product limit still applies. Scheduled scans are independent; explicit re-checks always bypass the cache and daily scan limit.</span>
+	</form>
+	{% endif %}
 	{% if accounts_enabled %}
 	<div class="quota-grid">
 		{% macro meter(label, item, note) %}
