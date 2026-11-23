@@ -36,7 +36,7 @@ def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | N
 	bulk_points = [(index, observed_at, bulk_price) for index, (observed_at, _price, bulk_price) in enumerate(points) if bulk_price is not None]
 	#Set chart Dimensions
 	height = 180
-	left, right, top, bottom = 52, 12, 12, 18
+	left, right, top, bottom = 52, 12, 12, 52
 	plot_width, plot_height = width - left - right, height - top - bottom
 	#Calculate the price range and tick interval
 	prices = [price for _, price, _ in points]
@@ -85,23 +85,23 @@ def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | N
 
 	for x, y, observed_at, price in coordinates:
 		observed_date = format_observed_at_utc(observed_at)
-		marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" tabindex="0"><title>${price:,.2f} on {observed_date}</title></circle>')
+		marks.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="var(--lg-main-line, #d06b35)" tabindex="0"><title>${price:,.2f} on {observed_date}</title></circle>')
 
 	bulk_line = " ".join(f"{x:.1f},{y:.1f}" for x, y, _, _ in bulk_coordinates)
 	bulk_marks = []
 
 	for x, y, observed_at, price in bulk_coordinates:
 		observed_date = format_observed_at_utc(observed_at)
-		bulk_marks.append(f'<circle class="bulk-price-point" cx="{x:.1f}" cy="{y:.1f}" r="4" tabindex="0"><title>Bulk price ${price:,.2f} on {observed_date}</title></circle>')
+		bulk_marks.append(f'<circle class="bulk-price-point" cx="{x:.1f}" cy="{y:.1f}" r="4" fill="var(--lg-bulk-line, #226b4d)" tabindex="0"><title>Bulk price ${price:,.2f} on {observed_date}</title></circle>')
 	#Generate SVG line paths for bulk prices
 	bulk_series = (
-		f'<polyline class="bulk-price-line" points="{bulk_line}" fill="none" stroke="var(--lg-bulk-line, #d46b36)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'
+		f'<polyline class="bulk-price-line" points="{bulk_line}" fill="none" stroke="var(--lg-bulk-line, #226b4d)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'
 		if bulk_coordinates else ""
 	)
 	#Generate SVG legend
 	legend = (
-		f'<g class="chart-legend" font-size="8"><line x1="{left + 8}" y1="8" x2="{left + 20}" y2="8" stroke="var(--lg-main-line)" stroke-width="2"/><text x="{left + 23}" y="11" fill="#6c756b">Price</text>'
-		f'<line x1="{left + 62}" y1="8" x2="{left + 74}" y2="8" stroke="var(--lg-bulk-line, #d46b36)" stroke-width="2"/><text x="{left + 77}" y="11" fill="#6c756b">Bulk price</text></g>'
+		f'<g class="chart-legend" font-size="8"><line x1="{left + 8}" y1="8" x2="{left + 20}" y2="8" stroke="var(--lg-main-line, #d06b35)" stroke-width="2"/><text x="{left + 23}" y="11" fill="#6c756b">Price</text>'
+		f'<line x1="{left + 62}" y1="8" x2="{left + 74}" y2="8" stroke="var(--lg-bulk-line, #226b4d)" stroke-width="2"/><text x="{left + 77}" y="11" fill="#6c756b">Bulk price</text></g>'
 		if bulk_coordinates else ""
 	)
 	#Generate SVG y-axis ticks
@@ -115,24 +115,20 @@ def price_chart(observations: list[sqlite3.Row], width: int = 360) -> Markup | N
 			f'<text x="{left - 6}" y="{y + 3:.1f}" fill="#6c756b" font-size="9" text-anchor="end">${price:,.2f}</text>'
 		)
 	# Generate SVG x-axis lables
-	date_indexes = sorted({0, len(coordinates) // 2, len(coordinates) - 1})
 	x_axis_labels = []
-	for index in date_indexes:
-		x, _, observed_at, _ = coordinates[index]
+	x_axis_gridlines = []
+	for x, _, observed_at, _ in coordinates:
 		observed_date = format_observed_at_utc(observed_at).split(" ")[0]
-		if index == 0:
-			anchor = "start"
-		elif index == len(coordinates) - 1:
-			anchor = "end"
-		else:
-			anchor = "middle"
+		x_axis_gridlines.append(
+			f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{axis_y}" stroke="#e2e4d9" stroke-width="1"/>'
+		)
 		x_axis_labels.append(
-			f'<text x="{x:.1f}" y="{height - 4}" fill="#6c756b" font-size="9" text-anchor="{anchor}">{observed_date}</text>'
+			f'<text x="{x:.1f}" y="{axis_y + 6}" transform="rotate(-45 {x:.1f} {axis_y + 6})" fill="#6c756b" font-size="8" text-anchor="end">{observed_date}</text>'
 		)
 	#Return the SVG chart markup
 	return Markup(
-		f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Price history with {len(points)} observations">'
-		f'{"".join(y_axis_ticks)}<line x1="{left}" y1="{top}" x2="{left}" y2="{axis_y}" stroke="#9ca597" stroke-width="1"/>'
+		f'<svg xmlns="http://www.w3.org/2000/svg" class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="Price history with {len(points)} observations">'
+		f'{"".join(y_axis_ticks)}{"".join(x_axis_gridlines)}<line x1="{left}" y1="{top}" x2="{left}" y2="{axis_y}" stroke="#9ca597" stroke-width="1"/>'
 		f'<line x1="{left}" y1="{axis_y}" x2="{width - right}" y2="{axis_y}" stroke="#9ca597" stroke-width="1"/>'
 		f'<polyline points="{line}" fill="none" stroke="var(--lg-main-line, #d06b35)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'
 		f'{bulk_series}{"".join(marks)}{"".join(bulk_marks)}{"".join(x_axis_labels)}{legend}</svg>'

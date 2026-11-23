@@ -63,7 +63,7 @@ def scan_products(
 	#Iterate over each product in the list
 	for product in products:
 		#Forced scans bypass the freshness cache.
-		if not force and product["price"] is not None and cache_is_fresh(product["checked_at"]): #Skip if product is not availiable or the cache is fresh
+		if not force and product["price"] is not None and not product["error"] and cache_is_fresh(product["checked_at"]):
 			continue
 		#Wait to ensure a minimum delay between fetches to avoid overwhelming the server
 		time.sleep(max(0, min_delay_seconds + random.uniform(0, 2) - (time.monotonic() - previous_fetch)))
@@ -106,6 +106,8 @@ def refresh_product(
 			provider=product["api_provider"] if "api_provider" in product.keys() else None,
 		)
 		status, error = "success", None
+		if result.get("price") is None and result.get("bulk_price") is None:
+			status, error = "error", "The API returned no price."
 	except Exception as fetch_error:  # A single URL must not cancel the scan.
 		result, status, error = {}, "error", str(fetch_error)
 
@@ -116,7 +118,19 @@ def refresh_product(
 				"UPDATE stores SET name = COALESCE(?, name), location = COALESCE(?, location) 				WHERE list_id = ? AND retailer = ? AND store_id = ? AND (name = ? OR location = ?)",
 								(result.get("store_name"), result.get("store_location"), product["list_id"], product["source"], product["store_id"], f"Store {product['store_id']}", "Location pending"),
 			)
-		connection.execute("UPDATE products SET title = COALESCE(?, title), price = ?, bulk_price = ?, bulk_quantity = ?, currency = ?, checked_at = ?, error = ?, retailer_product_id = COALESCE(?, retailer_product_id) WHERE id = ?", (result.get("title"), result.get("price"), result.get("bulk_price"), result.get("bulk_quantity"), result.get("currency"), observed_at, error, result.get("product_id"), product["id"]))
+		connection.execute(
+			"""UPDATE products SET title = COALESCE(?, title),
+			price = COALESCE(?, price, (SELECT price FROM observations
+				WHERE product_id = products.id AND status = 'success' AND price IS NOT NULL
+				ORDER BY observed_at DESC, id DESC LIMIT 1)),
+			bulk_price = CASE WHEN ? = 'error' THEN bulk_price ELSE ? END,
+			bulk_quantity = CASE WHEN ? = 'error' THEN bulk_quantity ELSE ? END,
+			currency = CASE WHEN ? IS NULL THEN COALESCE(?, currency) ELSE ? END,
+			checked_at = ?, error = ?, retailer_product_id = COALESCE(?, retailer_product_id) WHERE id = ?""",
+			(result.get("title"), result.get("price"), status, result.get("bulk_price"),
+			 status, result.get("bulk_quantity"), result.get("price"), result.get("currency"),
+			 result.get("currency"), observed_at, error, result.get("product_id"), product["id"]),
+		)
 		connection.execute("INSERT INTO observations (product_id, price, bulk_price, currency, title, status, error, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (product["id"], result.get("price"), result.get("bulk_price"), result.get("currency"), result.get("title"), status, error, observed_at))
 
 

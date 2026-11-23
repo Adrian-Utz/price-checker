@@ -697,6 +697,27 @@ def test_price_chart_shows_bulk_price_as_a_second_series():
     assert "Bulk price</text>" in str(chart)
 
 
+def test_price_chart_series_and_legend_use_matching_distinct_colors():
+    from xml.etree import ElementTree
+
+    chart = price_chart([
+        {"price": 12.5, "bulk_price": 10.0, "observed_at": "2026-08-20T12:30:00+00:00"},
+        {"price": 12.0, "bulk_price": 9.5, "observed_at": "2026-08-21T12:30:00+00:00"},
+    ])
+    root = ElementTree.fromstring(str(chart))
+    lines = root.findall("{*}polyline")
+    legend = root.find("./{*}g[@class='chart-legend']")
+    assert legend is not None
+    swatches = legend.findall("{*}line")
+    assert [line.get("stroke") for line in lines] == [line.get("stroke") for line in swatches]
+    assert lines[0].get("stroke") == "var(--lg-main-line, #d06b35)"
+    assert lines[1].get("stroke") == "var(--lg-bulk-line, #226b4d)"
+    assert [point.get("fill") for point in root.findall("{*}circle")] == [
+        lines[0].get("stroke"), lines[0].get("stroke"),
+        lines[1].get("stroke"), lines[1].get("stroke"),
+    ]
+
+
 def test_refresh_product_records_bulk_price_history(monkeypatch, tmp_path):
     """Test that refresh_product stores both regular and bulk prices in observation history."""
     from main import connect, init_db, refresh_product
@@ -722,6 +743,94 @@ def test_refresh_product_records_bulk_price_history(monkeypatch, tmp_path):
     assert tuple(observation) == (12.5, 10.0)
 
 
+@pytest.mark.parametrize("response", ["error", "missing", "bulk_only"])
+def test_refresh_preserves_last_price_when_no_regular_price_is_returned(monkeypatch, response):
+    from main import app, connect, refresh_product
+
+    with connect() as connection:
+        product_id = connection.execute(
+            "INSERT INTO products (list_id, user_id, url, source, price, bulk_price, bulk_quantity, currency) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, 'Walmart', 12.5, 10, 3, 'USD')",
+            ("https://www.walmart.com/ip/example/123456",),
+        ).lastrowid
+        product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+
+    def fetch(url, **kwargs):
+        if response == "error":
+            raise RuntimeError("API unavailable")
+        if response == "bulk_only":
+            return {"price": None, "bulk_price": 9.0, "bulk_quantity": 5, "currency": "USD"}
+        return {}
+
+    monkeypatch.setattr("main.fetch_product", fetch)
+    refresh_product(product)
+    with connect() as connection:
+        saved = connection.execute("SELECT price, bulk_price, bulk_quantity, currency, error FROM products WHERE id = ?", (product_id,)).fetchone()
+        observation = connection.execute("SELECT price, bulk_price, status, error FROM observations WHERE product_id = ?", (product_id,)).fetchone()
+    assert saved["price"] == 12.5
+    assert saved["currency"] == "USD"
+    assert observation["price"] is None
+    if response == "error":
+        assert tuple(saved)[1:3] == (10, 3)
+        assert saved["error"] == observation["error"] == "API unavailable"
+        assert observation["status"] == "error"
+    elif response == "missing":
+        assert saved["error"]
+        assert observation["status"] == "error"
+    else:
+        assert tuple(saved)[1:3] == (9, 5)
+        assert observation["status"] == "success"
+    assert b"$12.50" in app.test_client().get("/").data
+
+
+def test_refresh_recovers_latest_historical_price_and_keeps_failures_retryable(monkeypatch):
+    from main import connect, refresh_product
+    from utils.scanner import scan_products
+
+    with connect() as connection:
+        product_id = connection.execute(
+            "INSERT INTO products (list_id, user_id, url, source) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, 'Walmart')",
+            ("https://www.walmart.com/ip/example/123456",),
+        ).lastrowid
+        connection.executemany(
+            "INSERT INTO observations (product_id, price, status, observed_at) VALUES (?, ?, ?, ?)",
+            [(product_id, 8, "success", "2026-01-01"), (product_id, 7, "success", "2026-01-02"), (product_id, 1, "error", "2026-01-03")],
+        )
+        product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    monkeypatch.setattr("main.fetch_product", lambda url, **kwargs: {})
+    refresh_product(product)
+    with connect() as connection:
+        saved = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    assert saved["price"] == 7
+    assert saved["error"]
+    calls = []
+    monkeypatch.setattr("utils.scanner.time.sleep", lambda _: None)
+    scan_products([saved], force=False, cache_is_fresh=lambda _: True, min_delay_seconds=0, refresh_product=lambda row: calls.append(row["id"]))
+    assert calls == [product_id]
+
+
+def test_refresh_without_price_history_and_later_zero_price(monkeypatch):
+    from main import connect, refresh_product
+
+    with connect() as connection:
+        product_id = connection.execute(
+            "INSERT INTO products (list_id, user_id, url, source) VALUES ((SELECT list_id FROM list_members WHERE user_id = (SELECT id FROM users WHERE username = 'local')), (SELECT id FROM users WHERE username = 'local'), ?, 'Walmart')",
+            ("https://www.walmart.com/ip/example/123456",),
+        ).lastrowid
+        product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    monkeypatch.setattr("main.fetch_product", lambda url, **kwargs: {})
+    refresh_product(product)
+    with connect() as connection:
+        product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    assert product["price"] is None
+    assert product["error"]
+    monkeypatch.setattr("main.fetch_product", lambda url, **kwargs: {"price": 0, "currency": "USD"})
+    refresh_product(product)
+    with connect() as connection:
+        product = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    assert product["price"] == 0
+    assert product["error"] is None
+
+
 def test_price_chart_places_fifty_cent_price_ticks_on_left_and_dates_below():
     """Test that chart axis formatting places price ticks at 50-cent intervals on left and dates below."""
     from main import app
@@ -729,14 +838,51 @@ def test_price_chart_places_fifty_cent_price_ticks_on_left_and_dates_below():
     with app.app_context():
         chart = price_chart([
             {"price": 10.10, "observed_at": "2026-08-20T12:30:00+00:00"},
-            {"price": 11.90, "observed_at": "2026-08-21T12:30:00+00:00"},
+            {"price": 11.00, "observed_at": "2026-08-21T12:30:00+00:00"},
+            {"price": 11.90, "observed_at": "2026-08-22T12:30:00+00:00"},
         ])
 
     assert chart is not None
     assert 'text-anchor="end">$10.00</text>' in str(chart)
     assert 'text-anchor="end">$12.00</text>' in str(chart)
-    assert 'y="176" fill="#6c756b" font-size="9" text-anchor="start">2026-08-20</text>' in str(chart)
-    assert 'text-anchor="end">2026-08-21</text>' in str(chart)
+    from xml.etree import ElementTree
+
+    root = ElementTree.fromstring(str(chart))
+    labels = [text for text in root.findall("{*}text") if text.text and text.text.startswith("2026-")]
+    price_labels = [text for text in root.findall("{*}text") if text.text and text.text.startswith("$")]
+    assert [text.text for text in labels] == ["2026-08-20", "2026-08-21", "2026-08-22"]
+    for label in labels:
+        assert int(label.attrib["font-size"]) < int(price_labels[0].attrib["font-size"])
+        x, y = label.get("x"), label.get("y")
+        assert label.get("transform") == f"rotate(-45 {x} {y})"
+        assert any(
+            line.get("x1") == x and line.get("x2") == x
+            and line.get("stroke") == "#e2e4d9"
+            for line in root.findall("{*}line")
+        )
+
+
+@pytest.mark.parametrize("count", [1, 2, 12])
+def test_price_chart_labels_every_observation(count):
+    from xml.etree import ElementTree
+
+    observations = [
+        {"price": 10 + index, "bulk_price": 9 + index if index % 2 == 0 else None,
+         "observed_at": f"2026-08-{index + 1:02d}T12:30:00+00:00"}
+        for index in range(count)
+    ]
+    root = ElementTree.fromstring(str(price_chart(observations)))
+    points = [point for point in root.findall("{*}circle") if point.get("class") != "bulk-price-point"]
+    labels = [text for text in root.findall("{*}text") if text.text and text.text.startswith("2026-")]
+    assert len(labels) == len(points) == count
+    for point, label, observation in zip(points, labels, observations):
+        assert label.text == observation["observed_at"][:10]
+        assert label.get("x") == point.get("cx")
+        assert any(
+            line.get("x1") == label.get("x") == line.get("x2")
+            and line.get("stroke") == "#e2e4d9"
+            for line in root.findall("{*}line")
+        )
 
 
 def test_price_chart_uses_larger_familiar_ticks_for_large_prices():
@@ -789,6 +935,12 @@ def test_chart_window_limits_dense_date_range_to_notable_changes(monkeypatch, tm
     assert full_response.status_code == 200
     assert full_response.data.count(b"<circle ") == 13
     assert b'viewBox="0 0 468 180"' in full_response.data
+    from xml.etree import ElementTree
+
+    root = ElementTree.fromstring(full_response.data)
+    assert root.tag == "{http://www.w3.org/2000/svg}svg"
+    labels = [text.text for text in root.findall("{*}text") if text.text and text.text.startswith("2026-")]
+    assert labels == [f"2026-08-{index:02d}" for index in range(1, 14)]
 
 
 def test_chart_window_collapses_unchanged_prices(monkeypatch, tmp_path):

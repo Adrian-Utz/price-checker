@@ -585,7 +585,7 @@ def run_scan(user_id: int, *, override: bool | None = None) -> bool:
 
 
 def refresh_product(product: sqlite3.Row, *, bypass_limits: bool | None = None) -> None:
-	"""Reserve the credit before fetching: a failed fetch would otherwise overwrite the stored price with an error.
+	"""Reserve the credit before fetching so a budget failure does not become a fetch error.
 	Calls bypassing budgets are still counted (a limit of 0 means unlimited).
 	A scan carries the user who started it; anything else (a re-check) is paid for by the signed-in user."""
 	columns = product.keys()
@@ -1130,6 +1130,10 @@ def index():
 			f"SELECT * FROM stores WHERE list_id IN ({shared_lists.MEMBER_LISTS_SQL}) ORDER BY retailer, name, store_id", (user_id,)
 		).fetchall()
 		my_lists = shared_lists.lists_for_user(connection, user_id)
+		has_products = bool(product_rows)
+		product_counts = {}
+		for row in product_rows:
+			product_counts[row["list_id"]] = product_counts.get(row["list_id"], 0) + 1
 		# "All lists" unless the URL names one of this user's own lists; anything else falls back to all.
 		requested = request.args.get("list", "")
 		selected_list = int(requested) if requested.isdigit() and any(item["id"] == int(requested) for item in my_lists) else None
@@ -1182,6 +1186,7 @@ def index():
 	return render_template(
 		"page.html", 
 		products=products, 
+		has_products=has_products,
 		stores_by_list=stores_by_list, 
 		show_lists=len(my_lists) > 1,
 		my_lists=my_lists,
@@ -1196,7 +1201,7 @@ def index():
 		current_username=current_user()["username"],
 		accounts_enabled=not SETTINGS.is_local,
 		override_limits=user_overrides_limits(user_id),
-		quota=quota_view(user_id, max((sum(1 for p in products if p["list_id"] == list_id) for list_id in {p["list_id"] for p in products}), default=0)),
+		quota=quota_view(user_id, max(product_counts.values(), default=0)),
 		serpapi_ready=serpapi_ready(), 
 		unwrangle_ready=unwrangle_ready(), 
 		apify_ready=apify_ready(),
@@ -1312,14 +1317,17 @@ def add_url():
 				raise ValueError(f"The watchlist limit is {MAX_URLS} URLs.")
 			duplicate_exists = connection.execute("SELECT 1 FROM products WHERE list_id = ? AND url = ? LIMIT 1", (list_id, normalized)).fetchone()
 			if duplicate_exists and request.form.get("allow_duplicate") != "on":
-				return redirect(url_for("index", message="That URL is already tracked. Check 'Track another store' to add it again."))
+				return redirect(url_for("index", list=request.args.get("list"), message="That URL is already tracked. Check 'Track another store' to add it again."))
 			connection.execute("INSERT INTO products (list_id, user_id, url, source) VALUES (?, ?, ?, ?)", (list_id, user_id, normalized, source_for(normalized)))
+			is_member = connection.execute("SELECT 1 FROM list_members WHERE list_id = ? AND user_id = ?", (list_id, user_id)).fetchone() is not None
 		#Set message based on whether a duplicate was explicitly allowed
 		message = "URL added as another store." if duplicate_exists else "URL added."
+		if not is_member:
+			message += " You are not assigned to this list, so it will not appear in your watchlist."
 	except ValueError as error:
 		message = str(error)
 	#Redirect to the index page with the message
-	return redirect(url_for("index", message=message))
+	return redirect(url_for("index", list=request.args.get("list"), message=message))
 
 
 @app.post("/store/<int:product_id>")

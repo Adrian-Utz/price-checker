@@ -118,17 +118,20 @@ Written by: AJ Utz
 		<!--In this section we have a place for user input, and the option to track another store-->
 		<h2>Track a product</h2>
 		<!--Here the user inputs a link to a supported retailer and the program adds it to the list-->
-		<form method="post" action="{{ url_for('add_url') }}">
+		<form method="post" action="{{ url_for('add_url', list=selected_list) }}">
 			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-			{% if add_targets | length > 1 %}
-			<select name="list_id" aria-label="List to add to">
-				{% for target in add_targets %}<option value="{{ target.id }}">{{ target.name }}</option>{% endfor %}
+			{% if add_targets %}
+			<label for="add-target">Add to list</label>
+			<select id="add-target" name="list_id" required>
+				{% if add_targets | length > 1 %}<option value="" disabled {{ 'selected' if not selected_list }}>Choose a list</option>{% endif %}
+				{% for target in add_targets %}<option value="{{ target.id }}" {{ 'selected' if target.id == selected_list }}>{{ target.name }}</option>{% endfor %}
 			</select>
 			{% endif %}
 			<input name="url" type="url" placeholder="Paste a product URL here" aria-label="Product URL" required>
-			<button>Add URL</button>
+			<button {% if not add_targets %}disabled{% endif %}>Add URL</button>
 			<label class="duplicate-option"><input name="allow_duplicate" type="checkbox"> Track another store</label>
 		</form>
+		{% if not add_targets %}<p class="help">There is no list to add to yet. Create one under Lists first.</p>{% endif %}
 		<p class="help">Supported now: Walmart and Home Depot (via SerpApi), plus Walmart, Home Depot, Lowes, Ace Hardware, and Sams Club (via Unwrangle). Check “Track another store” when adding the same product for a different store. You can track up to {{ max_urls }} URLs.</p>
 	</section>
 			{% endif %}
@@ -139,14 +142,14 @@ Written by: AJ Utz
 		<h2>Daily check</h2>
 		<form method="post" action="{{ url_for('scan') }}">
 			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-			<button {% if not can_scan or not products or not provider_is_ready %}disabled{% endif %}>
+			<button {% if not can_scan or not has_products or not provider_is_ready %}disabled{% endif %}>
 				{{ 'Check prices' if can_scan else 'Checked for today' }}
 			</button>
 			<span class="muted">
 				{% if last_scan %}Last check: {{ last_scan }}{% else %}No check yet. Add a URL, then check prices.{% endif %}
 			</span>
 		</form>
-		<p class="help">Each URL is checked through the selected API provider ({{ api_provider }}), then saved locally so you can review the result later.</p>
+		<p class="help">Each URL on your assigned lists is checked through the selected API provider ({{ api_provider }}), then saved locally so you can review the result later. The list filter only changes the watchlist display.</p>
 		{% if quota.api %}<p class="help">API budget today: {{ quota.api.used }} of {{ quota.api.limit }} calls used (resets at midnight UTC).</p>{% endif %}
 		<div class="watchlist-actions">
 			{% if can_edit_watchlist %}<button class="export-button import-button" type="button" data-open-dialog="import-db">Import watchlist</button>{% endif %}
@@ -190,22 +193,20 @@ Written by: AJ Utz
 	<section>
 		<!--Starting section of your watchlist-->
 		<h2>Your watchlist <span class="muted">({{ products|length }})</span></h2>
-		{% if show_lists %}
+		{% if my_lists %}
 		<form id="list-filter" class="list-filter" method="get" action="{{ url_for('index') }}">
-			<label for="list-filter-select">Show</label>
+			<label for="list-filter-select">Filter watchlist by list</label>
 			<select id="list-filter-select" name="list">
 				<option value="">All lists</option>
 				{% for item in my_lists %}<option value="{{ item.id }}" {{ 'selected' if item.id == selected_list }}>{{ item.name }}</option>{% endfor %}
 			</select>
-			<button type="submit" id="list-filter-apply">Apply</button>
+			<button type="submit" id="list-filter-apply">Apply filter</button>
 		</form>
 		<script nonce="{{ csp_nonce }}">
 			const listFilter = document.getElementById("list-filter");
-			document.getElementById("list-filter-apply").hidden = true;
 			document.getElementById("list-filter-select").addEventListener("change", () => listFilter.submit());
 		</script>
 		{% endif %}
-		{% if not products and selected_list %}<p class="muted">This list has no items yet.</p>{% endif %}
 		{% if products %}
 		<form id="recheck-selected-form" method="post" action="{{ url_for('recheck_selected') }}">
 			<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -385,7 +386,7 @@ Written by: AJ Utz
 			</tbody>
 		</table>
 		{% else %}
-		<p class="muted">Your watchlist is empty. Paste a product URL above to get started.</p>
+		<p class="muted">{% if selected_list %}This list has no items yet.{% elif can_edit_watchlist %}Your watchlist is empty. Paste a product URL above to get started.{% else %}Your watchlist is empty.{% endif %}</p>
 		{% endif %}
 	</section>
 </body></html>
@@ -462,15 +463,19 @@ Written by: AJ Utz
 					return response.text();
 				})
 				.then(function (chart) {
-					downloadChartImage(chart, `${button.dataset.filename}-full-history`);
+					downloadChartImage(chart, `${button.dataset.filename}-full-history`, svg);
 				});
 			return;
 		}
-		downloadChartImage(new XMLSerializer().serializeToString(svg), button.dataset.filename);
+		downloadChartImage(new XMLSerializer().serializeToString(svg), button.dataset.filename, svg);
 	}
 	//Download the image as a png
-	function downloadChartImage(serializedSvg, filename) {
+	function downloadChartImage(serializedSvg, filename, sourceSvg) {
 		const svg = new DOMParser().parseFromString(serializedSvg, "image/svg+xml").documentElement;
+		const theme = getComputedStyle(sourceSvg);
+		for (const property of ["--lg-main-line", "--lg-bulk-line"]) {
+			svg.style.setProperty(property, theme.getPropertyValue(property));
+		}
 		const viewBox = svg.viewBox.baseVal;
 		const image = new Image();
 		const canvas = document.createElement("canvas");
@@ -487,7 +492,7 @@ Written by: AJ Utz
 			link.href = canvas.toDataURL("image/png");
 			link.click();
 		};
-		image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(serializedSvg)}`;
+		image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg))}`;
 	}
 	function setChartRange(button) {
 		const panel = button.closest(".chart-panel");

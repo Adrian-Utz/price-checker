@@ -22,7 +22,7 @@ It runs three ways:
 	- Walmart and Home Depot through SerpApi.
 	- Walmart, Home Depot, Lowes, Ace Hardware and Sam's Club through Unwrangle. Lowes store-specific lookups need the store number, ZIP code and state together.
 	- Lowes through Apify's Lowes Product Lookup actor (by product ID and ZIP code).
-3. Keep current results and price history in SQLite, with a line graph per item.
+3. Keep current results and price history in SQLite, with a line graph per item. If a check fails or returns no regular price, the last known price remains visible; errors are still recorded.
 4. One completed scan per day per user, with randomized request delays and a 24-hour result cache.
 5. Export your watchlist and history as JSON or CSV, and import a saved watchlist into your own account (it merges, nothing is replaced).
 6. Multiple user accounts in LAN and public modes, with an admin page, invites, lockout and rate limiting.
@@ -85,6 +85,7 @@ There is also a systemd unit for running without Docker. See [docs/deployment.md
 - Sub-admins have administrator access, but can reset only regular users' passwords and their own. They cannot change another admin's or sub-admin's role, create admins, promote users to admin, or disable or delete admin accounts. They can still disable or delete users and other sub-admins.
 - Admins and sub-admins can use **Override my quota and cache rules** in the limits panel. It is saved per account and defaults to on. Turn it off to honor the daily scan, API budget, hourly re-check and cache limits; explicitly re-checking items still bypasses the cache and daily scan limit. The product limit always applies. Scheduled scans are independent of this setting.
 - Administrators open **Lists** to create shared lists and choose which users see each one. Everyone on a list sees the same items, so a store or API change by one member shows for all of them. Only administrators add, import or remove items; each member's re-checks count against their own API limits.
+- Use **Filter watchlist by list** to show one assigned list or all assigned lists. Administrators select the destination under **Add to list** when tracking a product, including lists they are not assigned to; the watchlist itself only shows assigned lists. The filter does not restrict daily checks or exports.
 - Open **Schedules** to create, disable, enable, or delete multiple per-list scans (also available in local mode). Choose a future UTC start and a one-time, daily, weekly, or monthly recurrence; monthly runs skip months without that date. The app must be running at the scheduled minute: missed runs are not replayed. Local automatic tab-close shutdown stops the scheduler too.
 - Scheduled scans normally honor the cache and configured daily per-user and global API budgets, charged to the administrator who created the schedule. Force refresh bypasses both budgets and the cache but still counts calls; it can consume significant paid credits. Overlapping scans wait their turn. Runs are skipped if the creator is disabled or no longer an administrator. Deleting the creator or list deletes its schedules. The page shows the latest run status; check individual products for fetch errors. Disabling or deleting a schedule cancels queued runs but not running scans; queued work is lost if the server stops.
 - `PRICE_CHECKER_SCHEDULED_SCAN_HOUR` remains a separate legacy daily scan of enabled accounts; it can run alongside per-list schedules. It ignores the account checkbox and retains its previous behavior: administrator scans bypass the daily scan, cache and API budget limits.
@@ -223,7 +224,7 @@ Only check pages where automated access is permitted by the site's terms and app
 - Dev mode tools: raw API response viewer, price extraction debugger, replay of saved responses, API request log.
 - Usage bar showing remaining searches/credits.
 - Bulk purchasing line in graph history, and `bulk_price`/`bulk_quantity` CSV columns.
-- Line graph per product with user-controlled time interval, and export as an image.
+- Line graph per product with user-controlled time interval, an angled date label and gridline for each plotted observation, and PNG export using the current theme's series colors.
 - Watchlist export as JSON or CSV, including the retailer product ID when it can be extracted.
 - Flask interface for adding and removing URLs, with SQLite-backed prices, scan observations, errors and daily scan state.
 - SerpApi, Unwrangle (Walmart, Home Depot, Lowes, Ace Hardware, Sam's Club) and Apify (Lowes) integrations, with auto/manual provider choice and per-item pinning.

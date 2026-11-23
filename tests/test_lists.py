@@ -129,3 +129,63 @@ def test_list_filter_cannot_reach_lists_the_user_is_not_on(team):
 	body = team("alice").get(f"/?list={secret}").get_data(as_text=True)
 	assert "secret-thing" not in body 
 	assert "Secret" not in body
+
+
+def test_watchlist_filter_is_visible_and_shows_only_assigned_lists(team):
+	with connect() as connection:
+		other = lists.create_list(connection, "Garage")
+		lists.add_member(connection, other, team.ids["alice"])
+		secret = lists.create_list(connection, "Secret")
+	alice = team("alice")
+	page = alice.get(f"/?list={other}").get_data(as_text=True)
+	assert 'Filter watchlist by list</label>' in page
+	assert '<option value="">All lists</option>' in page
+	assert f'<option value="{team.list_id}" >Kitchen</option>' in page
+	assert f'<option value="{other}" selected>Garage</option>' in page
+	assert f'<option value="{secret}"' not in page
+	assert 'Apply filter</button>' in page
+	assert "This list has no items yet." in page
+	assert "Your watchlist is empty." not in page
+	assert 'Filter watchlist by list</label>' in team("bob").get("/").get_data(as_text=True)
+
+
+def test_admin_selects_destination_without_gaining_watchlist_access(team):
+	with connect() as connection:
+		garage = lists.create_list(connection, "Garage")
+		lists.add_member(connection, garage, team.ids["bob"])
+		lists.add_member(connection, team.list_id, team.ids["root"])
+	root = team("root")
+	assert '<option value="" disabled selected>Choose a list</option>' in root.get("/").get_data(as_text=True)
+	page = root.get(f"/?list={team.list_id}").get_data(as_text=True)
+	assert '<label for="add-target">Add to list</label>' in page
+	assert f'<option value="{team.list_id}" selected>Kitchen</option>' in page
+	assert f'<option value="{garage}" >Garage</option>' in page
+	url = "https://www.walmart.com/ip/garage-new/4"
+	response = root.post(f"/add?list={team.list_id}", data={"list_id": str(garage), "url": url}, follow_redirects=True)
+	assert response.status_code == 200
+	assert 'URL added.' in response.get_data(as_text=True)
+	assert "You are not assigned to this list" in response.get_data(as_text=True)
+	assert 'garage-new' not in response.get_data(as_text=True)
+	assert f'<option value="{team.list_id}" selected>Kitchen</option>' in response.get_data(as_text=True)
+	assert "garage-new" in team("bob").get(f"/?list={garage}").get_data(as_text=True)
+	assert team("bob").post("/add", data={"list_id": str(garage), "url": url}).status_code == 403
+	bad = root.post("/add", data={"list_id": "999999", "url": "https://www.walmart.com/ip/invalid/5"}, follow_redirects=True)
+	assert "Choose a valid list." in bad.get_data(as_text=True)
+	with connect() as connection:
+		assert connection.execute("SELECT list_id FROM products WHERE url = ?", (url,)).fetchone()["list_id"] == garage
+		assert connection.execute("SELECT COUNT(*) FROM products WHERE url LIKE '%/invalid/%'").fetchone()[0] == 0
+
+
+def test_filter_does_not_change_scan_availability_or_product_quota(team, monkeypatch):
+	with connect() as connection:
+		empty = lists.create_list(connection, "Empty")
+		lists.add_member(connection, empty, team.ids["alice"])
+		connection.execute(
+			"INSERT INTO products (list_id, user_id, url, source) VALUES (?, ?, 'https://www.walmart.com/ip/second/2', 'Walmart')",
+			(team.list_id, team.ids["root"]),
+		)
+	monkeypatch.setattr(main, "scan_allowed", lambda user_id: True)
+	monkeypatch.setattr(main, "provider_ready", lambda provider: True)
+	page = team("alice").get(f"/?list={empty}").get_data(as_text=True)
+	assert f'aria-label="Products tracked" aria-valuetext="2 of {main.MAX_URLS}"' in page
+	assert "<button >\n\t\t\t\tCheck prices" in page

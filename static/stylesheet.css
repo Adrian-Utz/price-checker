@@ -26,7 +26,7 @@
 }
 
 [data-theme="ocean"] {
-    --page-background: linear-gradient(90deg, #abf7e7 0%, #abeef7 50%, #abd5f7 100%);
+    --page-background: linear-gradient(90deg, #71acc1 0%, #689caf 50%, #5e8d9e 100%);
     --surface: #7bbcd3;
     --text: #0c1a1f;
     --muted-text: #212b2e;
