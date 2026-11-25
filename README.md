@@ -12,8 +12,8 @@ It runs three ways:
 
 **Written by:** AJ Utz  
 **Written on:** 7/27/2026  
-**Last Update on:** 11/19/2026  
-**Latest Version:** 0.1.3
+**Last Update on:** 11/23/2026  
+**Latest Version:** 0.1.4
 
 ## Main Capabilities
 
@@ -80,7 +80,7 @@ There is also a systemd unit for running without Docker. See [docs/deployment.md
 
 ## Accounts and administration
 
-- Sign in at `/login`. Sessions end after 120 minutes idle, and "Keep me signed in" lasts 30 days (`PRICE_CHECKER_REMEMBER_DAYS=0` turns it off).
+- Sign in at `/login`. Sessions end after 120 minutes idle, and "Keep me signed in" lasts 30 days (default, change: `PRICE_CHECKER_REMEMBER_DAYS=0` turns it off).
 - Administrators open **Users** to create accounts, disable them, reset passwords, change roles and make invite links.
 - Sub-admins have administrator access, but can reset only regular users' passwords and their own. They cannot change another admin's or sub-admin's role, create admins, promote users to admin, or disable or delete admin accounts. They can still disable or delete users and other sub-admins.
 - Admins and sub-admins can use **Override my quota and cache rules** in the limits panel. It is saved per account and defaults to on. Turn it off to honor the daily scan, API budget, hourly re-check and cache limits; explicitly re-checking items still bypasses the cache and daily scan limit. The product limit always applies. Scheduled scans are independent of this setting.
@@ -115,7 +115,7 @@ PRICE_CHECKER_API_PROVIDER=auto
 
 **Unwrangle** has a free trial of 100 credits. (Not renuable) Lowe's bulk-savings discounts are shown when a unit price and minimum quantity are available.
 
-**Apify** is pay-per-product (about $5 per 1,000 lookups; free accounts are limited). Copy your token from the Apify Console (Settings > API & Integrations). Optional settings:
+**Apify** has a free trial, it is also pay-per-product (about $5 per 1,000 lookups; free accounts are limited). Copy your token from the Apify Console (Settings > API & Integrations). Optional settings:
 
 ```dotenv
 APIFY_LOWES_ZIP=22902
@@ -184,6 +184,7 @@ price checker
 ├── main.py                    - Entrance file, routes and CLI commands.
 ├── requirements.txt           - Requirements to run the price checker.
 ├── version.py                 - The version number.
+├── start-price-checker.bat    - Quick start file on windows machines.
 ├── wsgi.py                    - Production entrypoint.
 ├── CODE_OF_CONDUCT.md, CONTRIBUTING.md, LICENSE, SECURITY.md
 ```
@@ -209,8 +210,6 @@ Only check pages where automated access is permitted by the site's terms and app
 - Search bar to quickly find an item instead of scrolling the whole list.
 - Integrate SerpApi's and Unwrangle's Amazon API.
 - SerpApi has many other APIs that don't fit this project. Perhaps an offshoot program (social media analytics).
-- Change the time zone from UTC to the machine's time zone.
-- Local database compare: see which items you and another list share (Walmart, Lowes, Home Depot), with an easy table export. Items must share something such as a UPC, name, product ID or SKU.
 - Password resets by email or security questions, and a forced password change after an admin reset.
 - Dev mode tools: fixture generator, parser validation panel, API health dashboard, dry-run mode.
 

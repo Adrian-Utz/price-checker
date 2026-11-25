@@ -3,13 +3,12 @@ from __future__ import annotations
 import math
 import sqlite3
 from datetime import date, datetime
-
 from markupsafe import Markup
 
 """
 This file contains the functions needed for line chart creation.
 
-Last Update: 10/30/2026
+Last Update: 11/25/2026
 Written on: 10/1/2026
 Written by: AJ Utz
 """

@@ -1,5 +1,5 @@
 # Price Checker (public mode) behind Caddy, which gets and renews the HTTPS certificate automatically.
-# Setup: copy .env.example to .env, set DOMAIN and an API key, then see docs/deployment.md.
+# Setup: copy what you want from .env.example to .env, set DOMAIN and an API key, then see docs/deployment.md.
 
 services:
   app:

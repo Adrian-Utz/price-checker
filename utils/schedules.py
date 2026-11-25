@@ -3,6 +3,13 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
+"""
+Creation of schedules are handled here.
+
+Written by: AJ Utz
+Written on: 11/13/2026
+Latest update: 11/24/2026
+"""
 
 def parse_schedule(frequency: str, start_at: str, now: datetime) -> tuple[str, str]:
 	"""

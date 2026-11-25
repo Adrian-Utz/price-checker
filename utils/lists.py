@@ -5,6 +5,8 @@ import sqlite3
 """
 Shared watchlists. Products and saved stores belong to a list, and every user assigned to a list sees the same items,
 so an edit made by one member (store, provider) is seen by all of them. Only administrators change list membership.
+
+
 """
 
 MAX_LIST_NAME_LENGTH = 60
